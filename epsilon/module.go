@@ -14,6 +14,8 @@
 
 package epsilon
 
+import "slices"
+
 // ValueType classifies the individual values that WebAssembly code can compute
 // with and the values that a variable accepts. They are either NumberType,
 // VectorType, or ReferenceType.
@@ -92,23 +94,8 @@ func (ft *FunctionType) Equal(other *FunctionType) bool {
 	if ft == nil || other == nil {
 		return false
 	}
-	if len(ft.ParamTypes) != len(other.ParamTypes) {
-		return false
-	}
-	if len(ft.ResultTypes) != len(other.ResultTypes) {
-		return false
-	}
-	for i, param := range ft.ParamTypes {
-		if param != other.ParamTypes[i] {
-			return false
-		}
-	}
-	for i, result := range ft.ResultTypes {
-		if result != other.ResultTypes[i] {
-			return false
-		}
-	}
-	return true
+	return slices.Equal(ft.ParamTypes, other.ParamTypes) &&
+		slices.Equal(ft.ResultTypes, other.ResultTypes)
 }
 
 type Function struct {
