@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"math"
 	"strconv"
+	"strings"
 	"testing"
 
 	"epsilon/epsilon"
@@ -93,7 +94,6 @@ func newSpecRunner(t *testing.T, wasmDict map[string][]byte) *SpecTestRunner {
 
 func (r *SpecTestRunner) run(commands []wabt.Command) {
 	for _, cmd := range commands {
-		// r.t.Logf("Executing '%v'", cmd)
 		switch cmd.Type {
 		case "module":
 			r.handleModule(cmd)
@@ -306,19 +306,16 @@ func (r *SpecTestRunner) getModuleInstance(
 
 func (r *SpecTestRunner) fatalf(line int, format string, args ...any) {
 	r.t.Helper()
-	message := fmt.Sprintf(format, args...)
-	r.t.Fatalf("line %d: %s", line, message)
+	r.t.Fatalf("line %d: %s", line, fmt.Sprintf(format, args...))
 }
 
 func v128ToGolang(v wabt.Value) (any, error) {
-	arr, ok := v.Value.([]any)
+	lanes, ok := v.Value.([]any)
 	if !ok {
 		return nil, fmt.Errorf("v128 value is not an array: %T", v.Value)
 	}
 
-	lanes := arr
 	buf := new(bytes.Buffer)
-
 	switch v.LaneType {
 	case "i8":
 		if len(lanes) != 16 {
@@ -403,10 +400,7 @@ func v128ToGolang(v wabt.Value) (any, error) {
 }
 
 func parseF32(s string) (float32, error) {
-	if s == "nan:canonical" {
-		return float32(math.NaN()), nil
-	}
-	if s == "nan:arithmetic" {
+	if strings.HasPrefix(s, "nan:") {
 		return float32(math.NaN()), nil
 	}
 	val, err := strconv.ParseUint(s, 10, 32)
@@ -417,10 +411,7 @@ func parseF32(s string) (float32, error) {
 }
 
 func parseF64(s string) (float64, error) {
-	if s == "nan:canonical" {
-		return math.NaN(), nil
-	}
-	if s == "nan:arithmetic" {
+	if strings.HasPrefix(s, "nan:") {
 		return math.NaN(), nil
 	}
 	val, err := strconv.ParseUint(s, 10, 64)
