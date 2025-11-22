@@ -1,33 +1,58 @@
 # ε Epsilon
 
-A [WASM](https://webassembly.org/) virtual machine written in Go, currently implementing the [WebAssembly 2.0 specification](https://webassembly.github.io/spec/versions/core/WebAssembly-2.0.pdf).
+A WebAssembly virtual machine written in Go.
+
+Implements the [WebAssembly 2.0 specification](https://webassembly.github.io/spec/versions/core/WebAssembly-2.0.pdf)
+with zero runtime dependencies.
+
+## Features
+
+- **Full WebAssembly 2.0 support*** — Implements the complete spec including
+SIMD, bulk memory operations, and reference types
+- **Zero dependencies** — Pure Go implementation with no external runtime
+dependencies
+- **Spec-compliant*** — Passes the official WebAssembly test suite
+- **Interactive REPL** — Experiment with WASM modules directly from the command
+line
+
+\* See [Spec Deviations](#spec-deviations) for minor implementation differences.
 
 ## Usage
 
 ### Running the REPL
 
-You can run the REPL directly using `go run`:
 ```bash
 go run main.go
 ```
 
 ### Commands
 
-The REPL supports the following commands:
-
+#### Module Management
 | Command | Description |
-|---|---|
-| `LOAD [<module-name>] <path-to-file \| url>` | Load a WASM module from a file or URL. |
-| `USE <module-name>` | Switch to a loaded module. |
-| `INVOKE <function-name> [args...]` | Invoke an exported function. |
-| `GET <global-name>` | Get the value of an exported global. |
-| `MEM <offset> <length>` | Inspect a range of memory in the active module. |
-| `/list` | List loaded modules and their exports. |
-| `/help` | Show available commands. |
-| `/clear` | Clear the screen and reset the VM state. |
-| `/quit` | Exit the REPL. |
+|---------|-------------|
+| `LOAD [<module-name>] <path-to-file \| url>` | Load a WASM module from a file / URL |
+| `USE <module-name>` | Switch to a loaded module |
 
-### Example
+#### Execution
+| Command | Description |
+|---------|-------------|
+| `INVOKE <function-name> [args...]` | Invoke an exported function |
+| `GET <global-name>` | Get the value of an exported global |
+
+#### Inspection
+| Command | Description |
+|---------|-------------|
+| `MEM <offset> <length>` | Inspect a range of memory in the active module |
+| `/list` | List loaded modules and their exports |
+
+#### REPL Control
+| Command | Description |
+|---------|-------------|
+| `/help` | Show available commands |
+| `/clear` | Clear the screen and reset the VM state |
+| `/quit` | Exit the REPL |
+
+### Example Session
 
 ```
 $ go run main.go
@@ -49,41 +74,42 @@ $ go run main.go
 
 ### Prerequisites
 
-To run the tests, you will need to install the
-[WebAssembly Binary Toolkit (WABT)](https://github.com/WebAssembly/wabt).
-This provides the `wat2wasm` and `wast2json` tools used in the test suites.
+Tests require the 
+[WebAssembly Binary Toolkit (WABT)](https://github.com/WebAssembly/wabt) for 
+`wat2wasm` and `wast2json`.
 
 ### Unit Tests
 
-Run all unit tests:
 ```bash
 go test ./epsilon/...
 ```
 
 ### Spec Tests
 
-This project includes the official WebAssembly specification tests as a
-submodule. To run these tests:
+The official WASM specification tests are included as a submodule:
+
 ```bash
 go test ./spec_tests/...
 ```
 
 ### Benchmarks
 
-Run all benchmarks:
 ```bash
 go test -bench . ./benchmarks
 ```
 
-## Specs deviations
+## Spec Deviations
 
-* **NaN Payloads**: The specification has precise rules for managing `NaN`
-payloads (the specific bit pattern within a `NaN`), including propagating them
-from inputs or using a "canonical" form. This implementation does not inspect or
-manipulate payloads, instead using Go's default `NaN` behavior.
-* **NaN Sign**: The specification requires a non-deterministic sign for
-resulting NaNs. This implementation produces a deterministic sign based on the
-operation and underlying hardware.
+This implementation deviates from the WASM specification in the following ways:
+
+- **NaN Payloads**: The spec defines precise rules for managing NaN payloads
+(the specific bit pattern within a NaN), including propagating them from inputs
+or using a "canonical" form. This implementation uses Go's default NaN behavior
+without inspecting or manipulating payloads.
+
+- **NaN Sign**: The spec requires a non-deterministic sign for resulting NaNs.
+This implementation produces a deterministic sign based on the operation and
+underlying hardware.
 
 ## Contributing
 
