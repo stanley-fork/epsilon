@@ -873,7 +873,7 @@ func (vm *VM) handleInstruction(instruction Instruction) error {
 	case I8x16Bitmask:
 		return handleUnary(vm, vm.stack.PopV128, SimdI8x16Bitmask)
 	case I8x16NarrowI16x8S:
-		return handleBinary(vm, vm.stack.PopV128, SimdI16x8NarrowI32x4S)
+		return handleBinary(vm, vm.stack.PopV128, SimdI8x16NarrowI16x8S)
 	case I8x16NarrowI16x8U:
 		return handleBinary(vm, vm.stack.PopV128, SimdI8x16NarrowI16x8U)
 	case F32x4Ceil:
