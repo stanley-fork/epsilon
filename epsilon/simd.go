@@ -916,7 +916,14 @@ func SimdF32x4DemoteF64x2Zero(v V128Value) V128Value {
 	f64High := math.Float64frombits(v.High)
 
 	f32Low := float32(f64Low)
+	if math.IsNaN(float64(f32Low)) {
+		f32Low = float32(math.NaN())
+	}
+
 	f32High := float32(f64High)
+	if math.IsNaN(float64(f32High)) {
+		f32High = float32(math.NaN())
+	}
 
 	buf := [8]byte{}
 	binary.LittleEndian.PutUint32(buf[0:4], math.Float32bits(f32Low))
@@ -932,9 +939,19 @@ func SimdF64x2PromoteLowF32x4(v V128Value) V128Value {
 	f32Low := math.Float32frombits(uint32(v.Low))
 	f32High := math.Float32frombits(uint32(v.Low >> 32))
 
+	low := float64(f32Low)
+	if math.IsNaN(low) {
+		low = math.NaN()
+	}
+
+	high := float64(f32High)
+	if math.IsNaN(high) {
+		high = math.NaN()
+	}
+
 	return V128Value{
-		Low:  math.Float64bits(float64(f32Low)),
-		High: math.Float64bits(float64(f32High)),
+		Low:  math.Float64bits(low),
+		High: math.Float64bits(high),
 	}
 }
 

@@ -55,8 +55,5 @@ func TestCoreSpec(t *testing.T) {
 }
 
 func TestSimdSpec(t *testing.T) {
-	// "simd_conversions.wast" and "simd_f64x2_arith.wast" require to properly
-	// handle NaN for simd instructions.
-	excludedTests := []string{"simd_conversions.wast", "simd_f64x2_arith.wast"}
-	testSpec(t, "../spec/test/core/simd", excludedTests)
+	testSpec(t, "../spec/test/core/simd", []string{"simd_f64x2_arith.wast"})
 }
