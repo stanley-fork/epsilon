@@ -161,18 +161,13 @@ func (r *SpecTestRunner) buildImports() map[string]map[string]any {
 }
 
 func (r *SpecTestRunner) handleModule(cmd wabt.Command) {
-	wasmBytes, ok := r.wasmDict[cmd.Filename]
-	if !ok {
-		r.fatalf(cmd.Line, "Wasm file %s not found in wasmDict", cmd.Filename)
-	}
-	parser := epsilon.NewParser(bytes.NewReader(wasmBytes))
-	module, err := parser.Parse()
+	wasmBytes := r.wasmDict[cmd.Filename]
+	module, err := epsilon.NewParser(bytes.NewReader(wasmBytes)).Parse()
 	if err != nil {
 		r.fatalf(cmd.Line, "failed to parse module %s: %v", cmd.Filename, err)
 	}
 
-	imports := r.buildImports()
-	instance, err := r.vm.Instantiate(module, imports)
+	instance, err := r.vm.Instantiate(module, r.buildImports())
 	if err != nil {
 		r.fatalf(cmd.Line, "failed to instantiate module %s: %v", cmd.Filename, err)
 	}
@@ -206,15 +201,10 @@ func (r *SpecTestRunner) handleAssertReturn(cmd wabt.Command) {
 func (r *SpecTestRunner) handleAssertTrap(cmd wabt.Command) {
 	if cmd.Filename != "" {
 		// This is asserting that instantiating a module will trap.
-		wasmBytes, ok := r.wasmDict[cmd.Filename]
-		if !ok {
-			r.fatalf(cmd.Line, "wasm file %s not found", cmd.Filename)
-		}
-
+		wasmBytes := r.wasmDict[cmd.Filename]
 		module, err := epsilon.NewParser(bytes.NewReader(wasmBytes)).Parse()
 		if err != nil {
-			// A parsing error is a valid form of trap.
-			return
+			r.fatalf(cmd.Line, "failed to parse module %s: %v", cmd.Filename, err)
 		}
 
 		_, err = r.vm.Instantiate(module, r.buildImports())
@@ -231,11 +221,7 @@ func (r *SpecTestRunner) handleAssertTrap(cmd wabt.Command) {
 }
 
 func (r *SpecTestRunner) handleAssertInvalid(cmd wabt.Command) {
-	wasmBytes, ok := r.wasmDict[cmd.Filename]
-	if !ok {
-		r.fatalf(cmd.Line, "wasm file %s not found", cmd.Filename)
-	}
-
+	wasmBytes := r.wasmDict[cmd.Filename]
 	module, err := epsilon.NewParser(bytes.NewReader(wasmBytes)).Parse()
 	if err != nil {
 		// We accept also parsing errors as valid form of invalid module.
@@ -255,11 +241,7 @@ func (r *SpecTestRunner) handleAssertMalformed(cmd wabt.Command) {
 		return
 	}
 
-	wasmBytes, ok := r.wasmDict[cmd.Filename]
-	if !ok {
-		r.fatalf(cmd.Line, "wasm file %s not found", cmd.Filename)
-	}
-
+	wasmBytes := r.wasmDict[cmd.Filename]
 	module, err := epsilon.NewParser(bytes.NewReader(wasmBytes)).Parse()
 	if err != nil {
 		return
@@ -274,37 +256,27 @@ func (r *SpecTestRunner) handleAssertMalformed(cmd wabt.Command) {
 }
 
 func (r *SpecTestRunner) handleAssertUninstantiable(cmd wabt.Command) {
-	wasmBytes, ok := r.wasmDict[cmd.Filename]
-	if !ok {
-		r.fatalf(cmd.Line, "wasm file %s not found", cmd.Filename)
-	}
-
+	wasmBytes := r.wasmDict[cmd.Filename]
 	module, err := epsilon.NewParser(bytes.NewReader(wasmBytes)).Parse()
 	if err != nil {
 		// A parsing error is a valid form of being uninstantiable.
 		return
 	}
 
-	imports := r.buildImports()
-	_, err = r.vm.Instantiate(module, imports)
+	_, err = r.vm.Instantiate(module, r.buildImports())
 	if err == nil {
 		r.fatalf(cmd.Line, "expected uninstantiable module, it wasn't")
 	}
 }
 
 func (r *SpecTestRunner) handleAssertUnlinkable(cmd wabt.Command) {
-	wasmBytes, ok := r.wasmDict[cmd.Filename]
-	if !ok {
-		r.fatalf(cmd.Line, "wasm file %s not found", cmd.Filename)
-	}
-
+	wasmBytes := r.wasmDict[cmd.Filename]
 	module, err := epsilon.NewParser(bytes.NewReader(wasmBytes)).Parse()
 	if err != nil {
 		r.fatalf(cmd.Line, "failed to parse module %s: %v", cmd.Filename, err)
 	}
 
-	imports := r.buildImports()
-	_, err = r.vm.Instantiate(module, imports)
+	_, err = r.vm.Instantiate(module, r.buildImports())
 	if err == nil {
 		r.fatalf(cmd.Line, "expected unlinkable module, it wasn't")
 	}
