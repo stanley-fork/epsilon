@@ -715,33 +715,33 @@ func (vm *VM) handleInstruction(instruction Instruction) error {
 	case F64x2Splat:
 		handleUnary(vm, vm.stack.PopFloat64, SimdF64x2Splat)
 	case I8x16ExtractLaneS:
-		err = handleSimdExtractLane(vm, instruction, SimdI8x16ExtractLaneS)
+		handleSimdExtractLane(vm, instruction, SimdI8x16ExtractLaneS)
 	case I8x16ExtractLaneU:
-		err = handleSimdExtractLane(vm, instruction, SimdI8x16ExtractLaneU)
+		handleSimdExtractLane(vm, instruction, SimdI8x16ExtractLaneU)
 	case I8x16ReplaceLane:
-		err = handleSimdReplaceLane(vm, instruction, vm.stack.PopInt32, SimdI8x16ReplaceLane)
+		handleSimdReplaceLane(vm, instruction, vm.stack.PopInt32, SimdI8x16ReplaceLane)
 	case I16x8ExtractLaneS:
-		err = handleSimdExtractLane(vm, instruction, SimdI16x8ExtractLaneS)
+		handleSimdExtractLane(vm, instruction, SimdI16x8ExtractLaneS)
 	case I16x8ExtractLaneU:
-		err = handleSimdExtractLane(vm, instruction, SimdI16x8ExtractLaneU)
+		handleSimdExtractLane(vm, instruction, SimdI16x8ExtractLaneU)
 	case I16x8ReplaceLane:
-		err = handleSimdReplaceLane(vm, instruction, vm.stack.PopInt32, SimdI16x8ReplaceLane)
+		handleSimdReplaceLane(vm, instruction, vm.stack.PopInt32, SimdI16x8ReplaceLane)
 	case I32x4ExtractLane:
-		err = handleSimdExtractLane(vm, instruction, SimdI32x4ExtractLane)
+		handleSimdExtractLane(vm, instruction, SimdI32x4ExtractLane)
 	case I32x4ReplaceLane:
-		err = handleSimdReplaceLane(vm, instruction, vm.stack.PopInt32, SimdI32x4ReplaceLane)
+		handleSimdReplaceLane(vm, instruction, vm.stack.PopInt32, SimdI32x4ReplaceLane)
 	case I64x2ExtractLane:
-		err = handleSimdExtractLane(vm, instruction, SimdI64x2ExtractLane)
+		handleSimdExtractLane(vm, instruction, SimdI64x2ExtractLane)
 	case I64x2ReplaceLane:
-		err = handleSimdReplaceLane(vm, instruction, vm.stack.PopInt64, SimdI64x2ReplaceLane)
+		handleSimdReplaceLane(vm, instruction, vm.stack.PopInt64, SimdI64x2ReplaceLane)
 	case F32x4ExtractLane:
-		err = handleSimdExtractLane(vm, instruction, SimdF32x4ExtractLane)
+		handleSimdExtractLane(vm, instruction, SimdF32x4ExtractLane)
 	case F32x4ReplaceLane:
-		err = handleSimdReplaceLane(vm, instruction, vm.stack.PopFloat32, SimdF32x4ReplaceLane)
+		handleSimdReplaceLane(vm, instruction, vm.stack.PopFloat32, SimdF32x4ReplaceLane)
 	case F64x2ExtractLane:
-		err = handleSimdExtractLane(vm, instruction, SimdF64x2ExtractLane)
+		handleSimdExtractLane(vm, instruction, SimdF64x2ExtractLane)
 	case F64x2ReplaceLane:
-		err = handleSimdReplaceLane(vm, instruction, vm.stack.PopFloat64, SimdF64x2ReplaceLane)
+		handleSimdReplaceLane(vm, instruction, vm.stack.PopFloat64, SimdF64x2ReplaceLane)
 	case I8x16Eq:
 		handleBinary(vm, vm.stack.PopV128, SimdI8x16Eq)
 	case I8x16Ne:
@@ -1604,16 +1604,11 @@ func (vm *VM) handleSimdTernary(op func(v1, v2, v3 V128Value) V128Value) {
 func handleSimdExtractLane[R WasmNumber](
 	vm *VM,
 	instruction Instruction,
-	op func(v V128Value, laneIndex uint32) (R, error),
-) error {
+	op func(v V128Value, laneIndex uint32) R,
+) {
 	laneIndex := uint32(instruction.Immediates[0])
 	v := vm.stack.PopV128()
-	res, err := op(v, laneIndex)
-	if err != nil {
-		return err
-	}
-	vm.stack.Push(res)
-	return nil
+	vm.stack.Push(op(v, laneIndex))
 }
 
 func handleStore[T WasmNumber | V128Value](
@@ -1675,11 +1670,7 @@ func (vm *VM) handleSimdLoadLane(
 		return nil
 	}
 
-	res, err := SetLane(v, laneIndex, laneValue)
-	if err != nil {
-		return err
-	}
-	vm.stack.Push(res)
+	vm.stack.Push(SetLane(v, laneIndex, laneValue))
 	return nil
 }
 
@@ -1693,10 +1684,7 @@ func (vm *VM) handleSimdStoreLane(
 	v := vm.stack.PopV128()
 	index := vm.stack.PopInt32()
 
-	laneData, err := ExtractLane(v, laneSize, laneIndex)
-	if err != nil {
-		return err
-	}
+	laneData := ExtractLane(v, laneSize, laneIndex)
 	return memory.Set(offset, uint32(index), laneData)
 }
 
@@ -1704,17 +1692,12 @@ func handleSimdReplaceLane[T WasmNumber](
 	vm *VM,
 	instruction Instruction,
 	pop func() T,
-	replaceLane func(V128Value, uint32, T) (V128Value, error),
-) error {
+	replaceLane func(V128Value, uint32, T) V128Value,
+) {
 	laneIndex := uint32(instruction.Immediates[0])
 	laneValue := pop()
 	vector := vm.stack.PopV128()
-	result, err := replaceLane(vector, laneIndex, laneValue)
-	if err != nil {
-		return err
-	}
-	vm.stack.Push(result)
-	return nil
+	vm.stack.Push(replaceLane(vector, laneIndex, laneValue))
 }
 
 func (vm *VM) unwindStack(targetHeight, arity uint) {

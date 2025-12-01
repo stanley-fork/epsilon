@@ -16,7 +16,6 @@ package epsilon
 
 import (
 	"encoding/binary"
-	"fmt"
 	"math"
 	"math/bits"
 	"slices"
@@ -198,8 +197,7 @@ func SimdI64x2SplatFromBytes(data []byte) V128Value {
 }
 
 func SimdF32x4Splat(val float32) V128Value {
-	bits := math.Float32bits(val)
-	v := uint64(bits)
+	v := uint64(math.Float32bits(val))
 	low := v | (v << 32)
 	return V128Value{Low: low, High: low}
 }
@@ -211,133 +209,109 @@ func SimdF64x2Splat(val float64) V128Value {
 
 // SimdI8x16ExtractLaneS extracts a signed 8-bit integer from the specified
 // lane.
-func SimdI8x16ExtractLaneS(v V128Value, laneIndex uint32) (int32, error) {
-	bytes, err := ExtractLane(v, 8, laneIndex)
-	if err != nil {
-		return 0, err
-	}
-	return int32(int8(bytes[0])), nil
+func SimdI8x16ExtractLaneS(v V128Value, laneIndex uint32) int32 {
+	bytes := ExtractLane(v, 8, laneIndex)
+	return int32(int8(bytes[0]))
 }
 
 // SimdI8x16ExtractLaneU extracts an unsigned 8-bit integer from the specified
 // lane.
-func SimdI8x16ExtractLaneU(v V128Value, laneIndex uint32) (int32, error) {
-	bytes, err := ExtractLane(v, 8, laneIndex)
-	if err != nil {
-		return 0, err
-	}
-	return int32(bytes[0]), nil
+func SimdI8x16ExtractLaneU(v V128Value, laneIndex uint32) int32 {
+	bytes := ExtractLane(v, 8, laneIndex)
+	return int32(bytes[0])
 }
 
 func SimdI8x16ReplaceLane(
 	v V128Value,
 	laneIndex uint32,
 	laneValue int32,
-) (V128Value, error) {
+) V128Value {
 	return SetLane(v, laneIndex, []byte{byte(laneValue)})
 }
 
 // SimdI16x8ExtractLaneS extracts a signed 16-bit integer from the specified
 // lane.
-func SimdI16x8ExtractLaneS(v V128Value, laneIndex uint32) (int32, error) {
-	bytes, err := ExtractLane(v, 16, laneIndex)
-	if err != nil {
-		return 0, err
-	}
-	return int32(int16(binary.LittleEndian.Uint16(bytes))), nil
+func SimdI16x8ExtractLaneS(v V128Value, laneIndex uint32) int32 {
+	bytes := ExtractLane(v, 16, laneIndex)
+	return int32(int16(binary.LittleEndian.Uint16(bytes)))
 }
 
 // SimdI16x8ExtractLaneU extracts an unsigned 16-bit integer from the specified
 // lane.
-func SimdI16x8ExtractLaneU(v V128Value, laneIndex uint32) (int32, error) {
-	bytes, err := ExtractLane(v, 16, laneIndex)
-	if err != nil {
-		return 0, err
-	}
-	return int32(binary.LittleEndian.Uint16(bytes)), nil
+func SimdI16x8ExtractLaneU(v V128Value, laneIndex uint32) int32 {
+	bytes := ExtractLane(v, 16, laneIndex)
+	return int32(binary.LittleEndian.Uint16(bytes))
 }
 
 func SimdI16x8ReplaceLane(
 	v V128Value,
 	laneIndex uint32,
 	laneValue int32,
-) (V128Value, error) {
+) V128Value {
 	buf := make([]byte, 2)
 	binary.LittleEndian.PutUint16(buf, uint16(laneValue))
 	return SetLane(v, laneIndex, buf)
 }
 
 // SimdI32x4ExtractLane extracts a 32-bit integer from the specified lane.
-func SimdI32x4ExtractLane(v V128Value, laneIndex uint32) (int32, error) {
-	bytes, err := ExtractLane(v, 32, laneIndex)
-	if err != nil {
-		return 0, err
-	}
-	return int32(binary.LittleEndian.Uint32(bytes)), nil
+func SimdI32x4ExtractLane(v V128Value, laneIndex uint32) int32 {
+	bytes := ExtractLane(v, 32, laneIndex)
+	return int32(binary.LittleEndian.Uint32(bytes))
 }
 
 func SimdI32x4ReplaceLane(
 	v V128Value,
 	laneIndex uint32,
 	laneValue int32,
-) (V128Value, error) {
+) V128Value {
 	buf := make([]byte, 4)
 	binary.LittleEndian.PutUint32(buf, uint32(laneValue))
 	return SetLane(v, laneIndex, buf)
 }
 
 // SimdI64x2ExtractLane extracts a 64-bit integer from the specified lane.
-func SimdI64x2ExtractLane(v V128Value, laneIndex uint32) (int64, error) {
-	bytes, err := ExtractLane(v, 64, laneIndex)
-	if err != nil {
-		return 0, err
-	}
-	return int64(binary.LittleEndian.Uint64(bytes)), nil
+func SimdI64x2ExtractLane(v V128Value, laneIndex uint32) int64 {
+	bytes := ExtractLane(v, 64, laneIndex)
+	return int64(binary.LittleEndian.Uint64(bytes))
 }
 
 func SimdI64x2ReplaceLane(
 	v V128Value,
 	laneIndex uint32,
 	laneValue int64,
-) (V128Value, error) {
+) V128Value {
 	buf := make([]byte, 8)
 	binary.LittleEndian.PutUint64(buf, uint64(laneValue))
 	return SetLane(v, laneIndex, buf)
 }
 
 // SimdF32x4ExtractLane extracts a 32-bit float from the specified lane.
-func SimdF32x4ExtractLane(v V128Value, laneIndex uint32) (float32, error) {
-	bytes, err := ExtractLane(v, 32, laneIndex)
-	if err != nil {
-		return 0, err
-	}
-	return math.Float32frombits(binary.LittleEndian.Uint32(bytes)), nil
+func SimdF32x4ExtractLane(v V128Value, laneIndex uint32) float32 {
+	bytes := ExtractLane(v, 32, laneIndex)
+	return math.Float32frombits(binary.LittleEndian.Uint32(bytes))
 }
 
 func SimdF32x4ReplaceLane(
 	v V128Value,
 	laneIndex uint32,
 	laneValue float32,
-) (V128Value, error) {
+) V128Value {
 	buf := make([]byte, 4)
 	binary.LittleEndian.PutUint32(buf, math.Float32bits(laneValue))
 	return SetLane(v, laneIndex, buf)
 }
 
 // SimdF64x2ExtractLane extracts a 64-bit float from the specified lane.
-func SimdF64x2ExtractLane(v V128Value, laneIndex uint32) (float64, error) {
-	bytes, err := ExtractLane(v, 64, laneIndex)
-	if err != nil {
-		return 0, err
-	}
-	return math.Float64frombits(binary.LittleEndian.Uint64(bytes)), nil
+func SimdF64x2ExtractLane(v V128Value, laneIndex uint32) float64 {
+	bytes := ExtractLane(v, 64, laneIndex)
+	return math.Float64frombits(binary.LittleEndian.Uint64(bytes))
 }
 
 func SimdF64x2ReplaceLane(
 	v V128Value,
 	laneIndex uint32,
 	laneValue float64,
-) (V128Value, error) {
+) V128Value {
 	buf := make([]byte, 8)
 	binary.LittleEndian.PutUint64(buf, math.Float64bits(laneValue))
 	return SetLane(v, laneIndex, buf)
@@ -821,7 +795,7 @@ func SimdV128Load64Zero(data []byte) V128Value {
 	return V128Value{Low: low, High: 0}
 }
 
-func SetLane(v V128Value, laneIndex uint32, value []byte) (V128Value, error) {
+func SetLane(v V128Value, laneIndex uint32, value []byte) V128Value {
 	result := V128Value{Low: v.Low, High: v.High}
 	switch len(value) {
 	case 1:
@@ -863,13 +837,11 @@ func SetLane(v V128Value, laneIndex uint32, value []byte) (V128Value, error) {
 		} else {
 			result.High = binary.LittleEndian.Uint64(value)
 		}
-	default:
-		return V128Value{}, fmt.Errorf("unsupported lane size: %d", len(value))
 	}
-	return result, nil
+	return result
 }
 
-func ExtractLane(value V128Value, laneSize, laneIndex uint32) ([]byte, error) {
+func ExtractLane(value V128Value, laneSize, laneIndex uint32) []byte {
 	laneSizeBytes := laneSize / 8
 	bytes := make([]byte, laneSizeBytes)
 
@@ -881,7 +853,7 @@ func ExtractLane(value V128Value, laneSize, laneIndex uint32) ([]byte, error) {
 			section = value.High
 		}
 		binary.LittleEndian.PutUint64(bytes, section)
-		return bytes, nil
+		return bytes
 	}
 
 	lanesPer64 := 64 / laneSize
@@ -905,10 +877,8 @@ func ExtractLane(value V128Value, laneSize, laneIndex uint32) ([]byte, error) {
 	case 32:
 		val := section >> (localIndex * 32)
 		binary.LittleEndian.PutUint32(bytes, uint32(val))
-	default:
-		return nil, fmt.Errorf("unsupported lane size: %d", laneSize)
 	}
-	return bytes, nil
+	return bytes
 }
 
 func SimdF32x4DemoteF64x2Zero(v V128Value) V128Value {

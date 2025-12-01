@@ -346,8 +346,8 @@ func v128Equal(expected, actual epsilon.V128Value, laneType string) bool {
 	switch laneType {
 	case "f32":
 		for i := range uint32(4) {
-			expLane, _ := epsilon.SimdF32x4ExtractLane(expected, i)
-			actLane, _ := epsilon.SimdF32x4ExtractLane(actual, i)
+			expLane := epsilon.SimdF32x4ExtractLane(expected, i)
+			actLane := epsilon.SimdF32x4ExtractLane(actual, i)
 			if !floatsEqual(expLane, actLane) {
 				return false
 			}
@@ -355,8 +355,8 @@ func v128Equal(expected, actual epsilon.V128Value, laneType string) bool {
 		return true
 	case "f64":
 		for i := range uint32(2) {
-			expLane, _ := epsilon.SimdF64x2ExtractLane(expected, i)
-			actLane, _ := epsilon.SimdF64x2ExtractLane(actual, i)
+			expLane := epsilon.SimdF64x2ExtractLane(expected, i)
+			actLane := epsilon.SimdF64x2ExtractLane(actual, i)
 			if !floatsEqual(expLane, actLane) {
 				return false
 			}
