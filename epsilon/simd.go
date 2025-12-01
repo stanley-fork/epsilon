@@ -51,16 +51,16 @@ func GetBytes(v V128Value) []byte {
 }
 
 func SimdV128Load8x8S(data []byte) V128Value {
-	p0 := uint64(uint16(int16(int8(data[0]))))
-	p1 := uint64(uint16(int16(int8(data[1]))))
-	p2 := uint64(uint16(int16(int8(data[2]))))
-	p3 := uint64(uint16(int16(int8(data[3]))))
+	p0 := uint64(uint16(int8(data[0])))
+	p1 := uint64(uint16(int8(data[1])))
+	p2 := uint64(uint16(int8(data[2])))
+	p3 := uint64(uint16(int8(data[3])))
 	low := p0 | p1<<16 | p2<<32 | p3<<48
 
-	p4 := uint64(uint16(int16(int8(data[4]))))
-	p5 := uint64(uint16(int16(int8(data[5]))))
-	p6 := uint64(uint16(int16(int8(data[6]))))
-	p7 := uint64(uint16(int16(int8(data[7]))))
+	p4 := uint64(uint16(int8(data[4])))
+	p5 := uint64(uint16(int8(data[5])))
+	p6 := uint64(uint16(int8(data[6])))
+	p7 := uint64(uint16(int8(data[7])))
 	high := p4 | p5<<16 | p6<<32 | p7<<48
 
 	return V128Value{Low: low, High: high}
@@ -144,7 +144,7 @@ func SimdI8x16Swizzle(v1, v2 V128Value) V128Value {
 
 	var resultBytes [16]byte
 	for i := range 16 {
-		index := int(bytes2[i])
+		index := bytes2[i]
 		if index < 16 {
 			resultBytes[i] = bytes1[index]
 		} else {
@@ -179,8 +179,8 @@ func SimdI16x8SplatFromBytes(data []byte) V128Value {
 }
 
 func SimdI32x4Splat(val int32) V128Value {
-	v := uint32(val)
-	low := uint64(v) | (uint64(v) << 32)
+	v := uint64(uint32(val))
+	low := v | (v << 32)
 	return V128Value{Low: low, High: low}
 }
 
@@ -1013,8 +1013,7 @@ func SimdI8x16ShrS(v V128Value, shift int32) V128Value {
 	s := shift & 7 // shift amount is modulo 8
 	return unaryOpI8x16(v, func(b byte) byte {
 		// convert to int8 to perform a signed right shift
-		val := int8(b) >> s
-		return byte(val)
+		return byte(int8(b) >> s)
 	})
 }
 

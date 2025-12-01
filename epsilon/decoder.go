@@ -23,7 +23,6 @@ import (
 )
 
 var (
-	ErrUnexpectedEOF            = errors.New("unexpected end of byte stream")
 	ErrIntRepresentationTooLong = errors.New("integer representation too long")
 	ErrIntegerTooLarge          = errors.New("integer too large")
 	ErrMalformedMemopFlags      = errors.New("malformed memop flags")
@@ -396,7 +395,7 @@ func (d *Decoder) readSleb128(maxBytes int) (uint64, error) {
 	for {
 		b, err = d.readByte()
 		if err != nil {
-			return 0, ErrUnexpectedEOF // Reached end of stream mid-integer.
+			return 0, err
 		}
 		bytesRead++
 		if bytesRead > maxBytes {
@@ -483,7 +482,7 @@ func (d *Decoder) readUleb128(maxBytes int) (uint64, error) {
 	for {
 		b, err := d.readByte()
 		if err != nil {
-			return 0, ErrUnexpectedEOF // Reached end of stream mid-integer.
+			return 0, err
 		}
 		bytesRead++
 		if bytesRead > maxBytes {
