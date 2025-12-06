@@ -15,7 +15,7 @@
 package spec_tests
 
 import (
-	"epsilon/wabt"
+	"epsilon/internal/wabt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -46,9 +46,9 @@ func testSpec(t *testing.T, dirPath string) {
 }
 
 func TestCoreSpec(t *testing.T) {
-	testSpec(t, "../spec/test/core")
+	testSpec(t, "spec/test/core")
 }
 
 func TestSimdSpec(t *testing.T) {
-	testSpec(t, "../spec/test/core/simd")
+	testSpec(t, "spec/test/core/simd")
 }
