@@ -52,7 +52,7 @@ func main() {
 	}()
 
 	repl := &repl{
-		vm:              epsilon.NewVM(),
+		runtime:         epsilon.NewRuntime(),
 		moduleInstances: make(map[string]*epsilon.ModuleInstance),
 		scanner:         bufio.NewScanner(os.Stdin),
 	}
@@ -60,7 +60,7 @@ func main() {
 }
 
 type repl struct {
-	vm              *epsilon.VM
+	runtime         *epsilon.Runtime
 	moduleInstances map[string]*epsilon.ModuleInstance
 	scanner         *bufio.Scanner
 }
@@ -134,12 +134,7 @@ func (r *repl) handleInstantiate(args []string) error {
 	}
 	defer moduleReader.Close()
 
-	module, err := epsilon.NewParser(moduleReader).Parse()
-	if err != nil {
-		return err
-	}
-
-	instance, err := r.vm.Instantiate(module, nil)
+	instance, err := r.runtime.InstantiateModule(moduleReader)
 	if err != nil {
 		return err
 	}
@@ -161,7 +156,7 @@ func (r *repl) handleInvoke(args []string) error {
 		return err
 	}
 
-	function, err := getFunctionInstance(module, funcName)
+	function, err := module.GetFunction(funcName)
 	if err != nil {
 		return err
 	}
@@ -184,7 +179,7 @@ func (r *repl) handleInvoke(args []string) error {
 		parsedArgs = append(parsedArgs, arg)
 	}
 
-	result, err := r.vm.Invoke(module, funcName, parsedArgs...)
+	result, err := module.Invoke(funcName, parsedArgs...)
 	if err != nil {
 		return err
 	}
@@ -208,7 +203,7 @@ func (r *repl) handleGet(args []string) error {
 		return err
 	}
 
-	val, err := r.vm.Get(module, globalName)
+	val, err := module.GetGlobal(globalName)
 	if err != nil {
 		return err
 	}
@@ -249,7 +244,7 @@ func (r *repl) handleMem(args []string) error {
 		return fmt.Errorf("invalid length: %s", lengthStr)
 	}
 
-	memory, err := getMemoryInstance(module)
+	memory, err := module.GetMemory("memory")
 	if err != nil {
 		return err
 	}
@@ -287,7 +282,7 @@ Commands:
 
 func (r *repl) handleClear() {
 	fmt.Print("\033[H\033[2J")
-	r.vm = epsilon.NewVM()
+	r.runtime = epsilon.NewRuntime()
 	r.moduleInstances = make(map[string]*epsilon.ModuleInstance)
 }
 
@@ -309,33 +304,6 @@ func (r *repl) parseItemName(
 		return nil, "", fmt.Errorf("module '%s' not found", moduleName)
 	}
 	return module, itemName, nil
-}
-
-func getFunctionInstance(
-	module *epsilon.ModuleInstance,
-	name string,
-) (epsilon.FunctionInstance, error) {
-	for _, exp := range module.Exports {
-		if exp.Name == name {
-			if f, ok := exp.Value.(epsilon.FunctionInstance); ok {
-				return f, nil
-			}
-		}
-	}
-	return nil, fmt.Errorf("'%s' not found", name)
-}
-
-func getMemoryInstance(
-	module *epsilon.ModuleInstance,
-) (*epsilon.Memory, error) {
-	for _, exp := range module.Exports {
-		if exp.Name == "memory" {
-			if m, ok := exp.Value.(*epsilon.Memory); ok {
-				return m, nil
-			}
-		}
-	}
-	return nil, fmt.Errorf("memory not found in module")
 }
 
 func parseFunctionArgument(

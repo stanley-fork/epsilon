@@ -30,6 +30,51 @@ type ModuleInstance struct {
 	ElemAddrs   []uint32
 	DataAddrs   []uint32
 	Exports     []ExportInstance
+	vm          *VM // Internal reference to resolve exports
+}
+
+// Invoke calls an exported function by name with the given arguments.
+//
+// Args can be int32, int64, float32, or float64. The function returns a slice
+// of results as []any, which can be type-asserted to the appropriate types.
+func (m *ModuleInstance) Invoke(name string, args ...any) ([]any, error) {
+	return m.vm.Invoke(m, name, args...)
+}
+
+// GetMemory returns an exported memory by name.
+func (m *ModuleInstance) GetMemory(name string) (*Memory, error) {
+	export, err := getExport(m, name, MemoryExportKind)
+	if err != nil {
+		return nil, err
+	}
+	return export.(*Memory), nil
+}
+
+// GetTable returns an exported table by name.
+func (m *ModuleInstance) GetTable(name string) (*Table, error) {
+	export, err := getExport(m, name, TableExportKind)
+	if err != nil {
+		return nil, err
+	}
+	return export.(*Table), nil
+}
+
+// GetGlobal returns the value of an exported global by name.
+func (m *ModuleInstance) GetGlobal(name string) (any, error) {
+	export, err := getExport(m, name, GlobalExportKind)
+	if err != nil {
+		return nil, err
+	}
+	return export.(*Global).Value, nil
+}
+
+// GetFunction returns an exported function by name.
+func (m *ModuleInstance) GetFunction(name string) (FunctionInstance, error) {
+	export, err := getExport(m, name, FunctionExportKind)
+	if err != nil {
+		return nil, err
+	}
+	return export.(FunctionInstance), nil
 }
 
 type FunctionInstance interface {

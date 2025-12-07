@@ -83,7 +83,10 @@ func (vm *VM) Instantiate(
 	if err := validator.validateModule(module); err != nil {
 		return nil, err
 	}
-	moduleInstance := &ModuleInstance{Types: module.Types}
+	moduleInstance := &ModuleInstance{
+		Types: module.Types,
+		vm:    vm,
+	}
 
 	resolvedImports, err := ResolveImports(module, imports)
 	if err != nil {
@@ -1749,6 +1752,18 @@ func getExport(
 				return nil, fmt.Errorf("export %s is not a global", name)
 			}
 			return global, nil
+		case MemoryExportKind:
+			memory, ok := export.Value.(*Memory)
+			if !ok {
+				return nil, fmt.Errorf("export %s is not a memory", name)
+			}
+			return memory, nil
+		case TableExportKind:
+			table, ok := export.Value.(*Table)
+			if !ok {
+				return nil, fmt.Errorf("export %s is not a table", name)
+			}
+			return table, nil
 		default:
 			return nil, fmt.Errorf("unsupported indexType %d", indexType)
 		}
