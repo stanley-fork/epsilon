@@ -52,6 +52,11 @@ const (
 	DataCountSectionId
 )
 
+type localEntry struct {
+	count uint64
+	typ   ValueType
+}
+
 // Parser is a parser for WASM modules.
 type Parser struct {
 	reader *bufio.Reader
@@ -264,22 +269,24 @@ func (p *Parser) parseFunction() (Function, error) {
 	limitedReader := io.LimitReader(originalReader, int64(size))
 	p.reader = bufio.NewReader(limitedReader)
 
-	localsVariables, err := parseVector(p, p.parseLocalVariables)
+	localEntries, err := parseVector(p, p.parseLocalVariables)
 	if err != nil {
 		return Function{}, fmt.Errorf("failed to parse locals: %w", err)
 	}
 
-	totalLocalsCount := 0
-	for _, variables := range localsVariables {
-		totalLocalsCount += len(variables)
+	var totalLocalsCount uint64
+	for _, entry := range localEntries {
+		totalLocalsCount += entry.count
 	}
 	if totalLocalsCount > math.MaxInt32 {
 		return Function{}, fmt.Errorf("too many locals: %d", totalLocalsCount)
 	}
 
-	locals := []ValueType{}
-	for _, variables := range localsVariables {
-		locals = append(locals, variables...)
+	locals := make([]ValueType, 0, totalLocalsCount)
+	for _, entry := range localEntries {
+		for i := uint64(0); i < entry.count; i++ {
+			locals = append(locals, entry.typ)
+		}
 	}
 
 	body, err := io.ReadAll(p.reader)
@@ -294,24 +301,20 @@ func (p *Parser) parseFunction() (Function, error) {
 	return Function{Locals: locals, Body: body[:len(body)-1]}, nil
 }
 
-func (p *Parser) parseLocalVariables() ([]ValueType, error) {
+func (p *Parser) parseLocalVariables() (localEntry, error) {
 	count, err := p.parseUint64()
 	if err != nil {
-		return nil, err
+		return localEntry{}, err
 	}
 	if count > math.MaxInt32 {
-		return nil, fmt.Errorf("too many local variables: %d", count)
+		return localEntry{}, fmt.Errorf("too many local variables: %d", count)
 	}
 
 	valueType, err := p.parseValueType()
 	if err != nil {
-		return nil, err
+		return localEntry{}, err
 	}
-	variables := make([]ValueType, count)
-	for i := range variables {
-		variables[i] = valueType
-	}
-	return variables, nil
+	return localEntry{count: count, typ: valueType}, nil
 }
 
 func (p *Parser) parseImport() (Import, error) {
