@@ -19,7 +19,7 @@ import (
 	"encoding/binary"
 	"testing"
 
-	"epsilon/internal/wabt"
+	"github.com/ziggy42/epsilon/internal/wabt"
 )
 
 func TestRuntimeTrivialFunction(t *testing.T) {

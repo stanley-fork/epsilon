@@ -16,8 +16,9 @@ package epsilon
 
 import (
 	"bytes"
-	"epsilon/internal/wabt"
 	"testing"
+
+	"github.com/ziggy42/epsilon/internal/wabt"
 )
 
 func getModule(wat string) (*Module, error) {

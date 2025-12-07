@@ -27,7 +27,7 @@ import (
 	"strings"
 	"syscall"
 
-	"epsilon/epsilon"
+	"github.com/ziggy42/epsilon/epsilon"
 )
 
 const (

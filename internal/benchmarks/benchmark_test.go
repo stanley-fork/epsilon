@@ -16,9 +16,10 @@ package benchmarks
 
 import (
 	"bytes"
-	"epsilon/epsilon"
 	"os"
 	"testing"
+
+	"github.com/ziggy42/epsilon/epsilon"
 )
 
 func BenchmarkFactorialRecursive(b *testing.B) {

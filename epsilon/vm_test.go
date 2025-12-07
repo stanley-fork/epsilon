@@ -19,7 +19,7 @@ import (
 	"fmt"
 	"testing"
 
-	"epsilon/internal/wabt"
+	"github.com/ziggy42/epsilon/internal/wabt"
 )
 
 func initVM(

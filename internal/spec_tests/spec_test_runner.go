@@ -23,8 +23,8 @@ import (
 	"strings"
 	"testing"
 
-	"epsilon/epsilon"
-	"epsilon/internal/wabt"
+	"github.com/ziggy42/epsilon/epsilon"
+	"github.com/ziggy42/epsilon/internal/wabt"
 )
 
 // specTestRunner manages the state and execution of a single spec test file.

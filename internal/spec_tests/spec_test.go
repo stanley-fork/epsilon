@@ -15,11 +15,12 @@
 package spec_tests
 
 import (
-	"epsilon/internal/wabt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/ziggy42/epsilon/internal/wabt"
 )
 
 func testSpec(t *testing.T, dirPath string) {
