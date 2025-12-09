@@ -96,6 +96,14 @@ $ go run ./cmd/epsilon
 
 ## Testing & Benchmarks
 
+### Prerequisites
+
+* Install [WABT](https://github.com/WebAssembly/wabt), which is required to compile WASM code defined in text format to binary.
+* Fetch the spec tests submodule:
+```bash
+git submodule update --init --recursive
+```
+
 ### Running Tests
 
 ```bash
