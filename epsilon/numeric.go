@@ -46,10 +46,6 @@ type wasmInt interface {
 	int32 | int64
 }
 
-func equalZero[T wasmNumber](a T) bool {
-	return a == 0
-}
-
 func equal[T wasmNumber](a, b T) bool {
 	return a == b
 }
@@ -262,10 +258,6 @@ func popcnt64(a int64) int64 {
 
 func abs[T wasmFloat](a T) T {
 	return T(math.Abs(float64(a)))
-}
-
-func neg[T wasmFloat](a T) T {
-	return -a
 }
 
 func ceil[T wasmFloat](a T) T {
