@@ -28,11 +28,8 @@ var (
 )
 
 const (
-	maxCallStackDepth         = 1000
-	controlStackCacheSlotSize = 16 // Control stack slot size per call frame.
-	controlStackCacheSize     = maxCallStackDepth * controlStackCacheSlotSize
-	localsCacheSlotSize       = 16 // Locals slot size per call frame.
-	localsCacheSize           = maxCallStackDepth * localsCacheSlotSize
+	controlStackCacheSlotSize = 14 // Control stack slot size per call frame.
+	localsCacheSlotSize       = 12 // Locals slot size per call frame.
 )
 
 // store represents all global state that can be manipulated by the vm. It
@@ -49,26 +46,25 @@ type store struct {
 }
 
 type callFrame struct {
-	code         []uint64
-	pc           uint
+	pc           uint32
 	controlStack []controlFrame
 	locals       []value
-	function     *wasmFunction
+	function     *function
+	module       *ModuleInstance
 }
 
 func (f *callFrame) next() uint64 {
-	val := f.code[f.pc]
+	val := f.function.body[f.pc]
 	f.pc++
 	return val
 }
 
 // controlFrame represents a block of code that can be branched to.
 type controlFrame struct {
-	opcode         opcode // The opcode that created this control frame.
-	continuationPc uint   // The address to jump to when `br` targets this frame.
-	inputCount     uint   // Count of inputs this control instruction consumes.
-	outputCount    uint   // Count of outputs this control instruction produces.
-	stackHeight    uint
+	isLoop         bool
+	blockType      int32
+	continuationPc uint32 // The address to jump to when `br` targets this frame.
+	stackHeight    uint32
 }
 
 // vm is the WebAssembly Virtual Machine.
@@ -76,17 +72,21 @@ type vm struct {
 	store             *store
 	stack             *valueStack
 	callStack         []callFrame
-	callStackDepth    int
-	controlStackCache [controlStackCacheSize]controlFrame
-	localsCache       [localsCacheSize]value
-	features          ExperimentalFeatures
+	controlStackCache []controlFrame
+	localsCache       []value
+	config            Config
 }
 
-func newVm() *vm {
+func newVm(config Config) *vm {
+	ctrlCacheSize := config.CallStackPreallocationSize * controlStackCacheSlotSize
+	localsCacheSize := config.CallStackPreallocationSize * localsCacheSlotSize
 	return &vm{
-		store:     &store{},
-		stack:     newValueStack(),
-		callStack: make([]callFrame, 0, maxCallStackDepth),
+		store:             &store{},
+		stack:             newValueStack(),
+		callStack:         make([]callFrame, 0, config.CallStackPreallocationSize),
+		controlStackCache: make([]controlFrame, ctrlCacheSize),
+		localsCache:       make([]value, localsCacheSize),
+		config:            config,
 	}
 }
 
@@ -94,7 +94,7 @@ func (vm *vm) instantiate(
 	module *moduleDefinition,
 	imports map[string]map[string]any,
 ) (*ModuleInstance, error) {
-	validator := newValidator(vm.features)
+	validator := newValidator(vm.config)
 	if err := validator.validateModule(module); err != nil {
 		return nil, err
 	}
@@ -231,17 +231,18 @@ func (vm *vm) invokeFunction(function FunctionInstance) error {
 }
 
 func (vm *vm) invokeWasmFunction(function *wasmFunction) error {
-	if vm.callStackDepth >= maxCallStackDepth {
+	if len(vm.callStack) >= vm.config.MaxCallStackDepth {
 		return errCallStackExhausted
 	}
-	vm.callStackDepth++
-	defer func() { vm.callStackDepth-- }()
+
+	callDepth := len(vm.callStack)
+	withinPreallocation := callDepth < vm.config.CallStackPreallocationSize
 
 	numParams := len(function.functionType.ParamTypes)
 	numLocals := numParams + len(function.code.locals)
 	var locals []value
-	if numLocals <= localsCacheSlotSize {
-		blockDepth := (vm.callStackDepth - 1) * localsCacheSlotSize
+	if withinPreallocation && numLocals <= localsCacheSlotSize {
+		blockDepth := callDepth * localsCacheSlotSize
 		max := blockDepth + localsCacheSlotSize
 		locals = vm.localsCache[blockDepth : blockDepth+numLocals : max]
 		// Clear non-parameter locals to their zero values. WASM allows reading
@@ -249,8 +250,7 @@ func (vm *vm) invokeWasmFunction(function *wasmFunction) error {
 		// from previous invocations. Parameters are overwritten below.
 		clear(locals[numParams:])
 	} else {
-		// The cache is not large enough to fit the amount of locals for the current
-		// function, therefore we need a new allocation.
+		// Beyond preallocation or too many locals: heap allocate.
 		locals = make([]value, numLocals)
 	}
 
@@ -259,33 +259,45 @@ func (vm *vm) invokeWasmFunction(function *wasmFunction) error {
 	copy(locals[:numParams], vm.stack.data[newLen:])
 	vm.stack.data = vm.stack.data[:newLen]
 
-	// Use part of the cache for the control stack to avoid allocations.
-	blockDepth := (vm.callStackDepth - 1) * controlStackCacheSlotSize
-	// Slice cap to prevent appending into the next slot.
-	max := blockDepth + controlStackCacheSlotSize
-	controlStack := vm.controlStackCache[blockDepth:blockDepth:max]
+	var controlStack []controlFrame
+	if withinPreallocation {
+		// Use part of the cache for the control stack to avoid allocations.
+		blockDepth := callDepth * controlStackCacheSlotSize
+		// Slice cap to prevent appending into the next slot.
+		max := blockDepth + controlStackCacheSlotSize
+		controlStack = vm.controlStackCache[blockDepth:blockDepth:max]
+	}
 	controlStack = append(controlStack, controlFrame{
-		opcode:         block,
-		continuationPc: uint(len(function.code.body)),
-		inputCount:     uint(len(function.functionType.ParamTypes)),
-		outputCount:    uint(len(function.functionType.ResultTypes)),
+		isLoop:         false,
+		blockType:      int32(function.code.typeIndex),
+		continuationPc: uint32(len(function.code.body)),
 		stackHeight:    vm.stack.size(),
 	})
 
 	vm.callStack = append(vm.callStack, callFrame{
-		code:         function.code.body,
 		pc:           0,
 		controlStack: controlStack,
 		locals:       locals,
-		function:     function,
+		function:     &function.code,
+		module:       function.module,
 	})
-	frame := &vm.callStack[len(vm.callStack)-1]
 
-	for frame.pc < uint(len(frame.code)) {
+	for {
+		// We must re-fetch the frame pointer on each iteration because nested calls
+		// may append to vm.callStack, causing the slice to reallocate and
+		// invalidate any previously held pointers. This pointer is safe to use
+		// within a single instruction execution since no handler uses it after
+		// invoking a nested call.
+		frame := &vm.callStack[len(vm.callStack)-1]
+		if frame.pc >= uint32(len(frame.function.body)) {
+			break
+		}
 		if err := vm.executeInstruction(frame); err != nil {
 			if errors.Is(err, errReturn) {
 				break // A 'return' instruction was executed.
 			}
+			// Ensure we pop the stack frame even if executeInstruction fails.
+			vm.callStack = vm.callStack[:len(vm.callStack)-1]
 			return err
 		}
 	}
@@ -330,7 +342,7 @@ func (vm *vm) executeInstruction(frame *callFrame) error {
 		vm.handleSelect()
 	case selectT:
 		count := frame.next()
-		frame.pc += uint(count)
+		frame.pc += uint32(count)
 		vm.handleSelect()
 	case localGet:
 		vm.stack.push(frame.locals[frame.next()])
@@ -479,11 +491,17 @@ func (vm *vm) executeInstruction(frame *callFrame) error {
 	case i32Popcnt:
 		vm.stack.pushInt32(popcnt32(vm.stack.popInt32()))
 	case i32Add:
-		vm.handleBinaryInt32(add)
+		b := vm.stack.popInt32()
+		res := vm.stack.data[len(vm.stack.data)-1].int32() + b
+		vm.stack.data[len(vm.stack.data)-1] = i32(res)
 	case i32Sub:
-		vm.handleBinaryInt32(sub)
+		b := vm.stack.popInt32()
+		res := vm.stack.data[len(vm.stack.data)-1].int32() - b
+		vm.stack.data[len(vm.stack.data)-1] = i32(res)
 	case i32Mul:
-		vm.handleBinaryInt32(mul)
+		b := vm.stack.popInt32()
+		res := vm.stack.data[len(vm.stack.data)-1].int32() * b
+		vm.stack.data[len(vm.stack.data)-1] = i32(res)
 	case i32DivS:
 		err = vm.handleBinarySafeInt32(divS32)
 	case i32DivU:
@@ -493,21 +511,37 @@ func (vm *vm) executeInstruction(frame *callFrame) error {
 	case i32RemU:
 		err = vm.handleBinarySafeInt32(remU32)
 	case i32And:
-		vm.handleBinaryInt32(and)
+		b := vm.stack.popInt32()
+		res := vm.stack.data[len(vm.stack.data)-1].int32() & b
+		vm.stack.data[len(vm.stack.data)-1] = i32(res)
 	case i32Or:
-		vm.handleBinaryInt32(or)
+		b := vm.stack.popInt32()
+		res := vm.stack.data[len(vm.stack.data)-1].int32() | b
+		vm.stack.data[len(vm.stack.data)-1] = i32(res)
 	case i32Xor:
-		vm.handleBinaryInt32(xor)
+		b := vm.stack.popInt32()
+		res := vm.stack.data[len(vm.stack.data)-1].int32() ^ b
+		vm.stack.data[len(vm.stack.data)-1] = i32(res)
 	case i32Shl:
-		vm.handleBinaryInt32(shl32)
+		b := vm.stack.popInt32()
+		res := vm.stack.data[len(vm.stack.data)-1].int32() << (uint32(b) % 32)
+		vm.stack.data[len(vm.stack.data)-1] = i32(res)
 	case i32ShrS:
-		vm.handleBinaryInt32(shrS32)
+		b := vm.stack.popInt32()
+		res := vm.stack.data[len(vm.stack.data)-1].int32() >> (uint32(b) % 32)
+		vm.stack.data[len(vm.stack.data)-1] = i32(res)
 	case i32ShrU:
-		vm.handleBinaryInt32(shrU32)
+		b := vm.stack.popInt32()
+		res := shrU32(vm.stack.data[len(vm.stack.data)-1].int32(), b)
+		vm.stack.data[len(vm.stack.data)-1] = i32(res)
 	case i32Rotl:
-		vm.handleBinaryInt32(rotl32)
+		b := vm.stack.popInt32()
+		res := rotl32(vm.stack.data[len(vm.stack.data)-1].int32(), b)
+		vm.stack.data[len(vm.stack.data)-1] = i32(res)
 	case i32Rotr:
-		vm.handleBinaryInt32(rotr32)
+		b := vm.stack.popInt32()
+		res := rotr32(vm.stack.data[len(vm.stack.data)-1].int32(), b)
+		vm.stack.data[len(vm.stack.data)-1] = i32(res)
 	case i64Clz:
 		vm.stack.pushInt64(clz64(vm.stack.popInt64()))
 	case i64Ctz:
@@ -515,11 +549,17 @@ func (vm *vm) executeInstruction(frame *callFrame) error {
 	case i64Popcnt:
 		vm.stack.pushInt64(popcnt64(vm.stack.popInt64()))
 	case i64Add:
-		vm.handleBinaryInt64(add)
+		b := vm.stack.popInt64()
+		res := vm.stack.data[len(vm.stack.data)-1].int64() + b
+		vm.stack.data[len(vm.stack.data)-1] = i64(res)
 	case i64Sub:
-		vm.handleBinaryInt64(sub)
+		b := vm.stack.popInt64()
+		res := vm.stack.data[len(vm.stack.data)-1].int64() - b
+		vm.stack.data[len(vm.stack.data)-1] = i64(res)
 	case i64Mul:
-		vm.handleBinaryInt64(mul)
+		b := vm.stack.popInt64()
+		res := vm.stack.data[len(vm.stack.data)-1].int64() * b
+		vm.stack.data[len(vm.stack.data)-1] = i64(res)
 	case i64DivS:
 		err = vm.handleBinarySafeInt64(divS64)
 	case i64DivU:
@@ -529,21 +569,37 @@ func (vm *vm) executeInstruction(frame *callFrame) error {
 	case i64RemU:
 		err = vm.handleBinarySafeInt64(remU64)
 	case i64And:
-		vm.handleBinaryInt64(and)
+		b := vm.stack.popInt64()
+		res := vm.stack.data[len(vm.stack.data)-1].int64() & b
+		vm.stack.data[len(vm.stack.data)-1] = i64(res)
 	case i64Or:
-		vm.handleBinaryInt64(or)
+		b := vm.stack.popInt64()
+		res := vm.stack.data[len(vm.stack.data)-1].int64() | b
+		vm.stack.data[len(vm.stack.data)-1] = i64(res)
 	case i64Xor:
-		vm.handleBinaryInt64(xor)
+		b := vm.stack.popInt64()
+		res := vm.stack.data[len(vm.stack.data)-1].int64() ^ b
+		vm.stack.data[len(vm.stack.data)-1] = i64(res)
 	case i64Shl:
-		vm.handleBinaryInt64(shl64)
+		b := vm.stack.popInt64()
+		res := shl64(vm.stack.data[len(vm.stack.data)-1].int64(), b)
+		vm.stack.data[len(vm.stack.data)-1] = i64(res)
 	case i64ShrS:
-		vm.handleBinaryInt64(shrS64)
+		b := vm.stack.popInt64()
+		res := shrS64(vm.stack.data[len(vm.stack.data)-1].int64(), b)
+		vm.stack.data[len(vm.stack.data)-1] = i64(res)
 	case i64ShrU:
-		vm.handleBinaryInt64(shrU64)
+		b := vm.stack.popInt64()
+		res := shrU64(vm.stack.data[len(vm.stack.data)-1].int64(), b)
+		vm.stack.data[len(vm.stack.data)-1] = i64(res)
 	case i64Rotl:
-		vm.handleBinaryInt64(rotl64)
+		b := vm.stack.popInt64()
+		res := rotl64(vm.stack.data[len(vm.stack.data)-1].int64(), b)
+		vm.stack.data[len(vm.stack.data)-1] = i64(res)
 	case i64Rotr:
-		vm.handleBinaryInt64(rotr64)
+		b := vm.stack.popInt64()
+		res := rotr64(vm.stack.data[len(vm.stack.data)-1].int64(), b)
+		vm.stack.data[len(vm.stack.data)-1] = i64(res)
 	case f32Abs:
 		vm.stack.pushFloat32(abs(vm.stack.popFloat32()))
 	case f32Neg:
@@ -1185,44 +1241,34 @@ func (vm *vm) currentCallFrame() *callFrame {
 	return &vm.callStack[len(vm.callStack)-1]
 }
 
-func (vm *vm) currentModuleInstance() *ModuleInstance {
-	return vm.currentCallFrame().function.module
-}
-
 func (vm *vm) pushBlockFrame(opcode opcode, blockType int32) {
 	callFrame := vm.currentCallFrame()
-	originalPc := callFrame.pc
-	inputCount, outputCount := vm.getBlockInputOutputCount(blockType)
-	frame := controlFrame{
-		opcode:      opcode,
-		inputCount:  inputCount,
-		outputCount: outputCount,
-		stackHeight: vm.stack.size(),
-	}
-
 	// For loops, the continuation is a branch back to the start of the block.
+	var continuationPc uint32
 	if opcode == loop {
-		frame.continuationPc = originalPc
+		continuationPc = callFrame.pc
 	} else {
-		frame.continuationPc = callFrame.function.code.jumpCache[originalPc]
+		continuationPc = callFrame.function.jumpCache[callFrame.pc]
 	}
 
-	vm.pushControlFrame(frame)
+	vm.pushControlFrame(controlFrame{
+		isLoop:         opcode == loop,
+		blockType:      blockType,
+		stackHeight:    vm.stack.size(),
+		continuationPc: continuationPc,
+	})
 }
 
 func (vm *vm) handleIf(frame *callFrame) {
-	blockType := int32(frame.next())
-	originalPc := frame.pc
-
 	condition := vm.stack.popInt32()
 
-	vm.pushBlockFrame(ifOp, blockType)
+	vm.pushBlockFrame(ifOp, int32(frame.next()))
 
 	if condition != 0 {
 		return
 	}
 
-	frame.pc = frame.function.code.jumpElseCache[originalPc]
+	frame.pc = frame.function.jumpElseCache[frame.pc]
 }
 
 func (vm *vm) handleElse(frame *callFrame) {
@@ -1235,7 +1281,9 @@ func (vm *vm) handleElse(frame *callFrame) {
 
 func (vm *vm) handleEnd() {
 	frame := vm.popControlFrame()
-	vm.stack.unwind(frame.stackHeight, frame.outputCount)
+	callFrame := vm.currentCallFrame()
+	outputCount := vm.getOutputCount(callFrame.module, frame.blockType)
+	vm.stack.unwind(frame.stackHeight, outputCount)
 }
 
 func (vm *vm) handleBrIf(frame *callFrame) {
@@ -1252,11 +1300,11 @@ func (vm *vm) handleBrTable(frame *callFrame) {
 	index := vm.stack.popInt32()
 	var targetLabel uint32
 	if index >= 0 && uint64(index) < size {
-		targetLabel = uint32(frame.code[frame.pc+uint(index)])
+		targetLabel = uint32(frame.function.body[frame.pc+uint32(index)])
 	} else {
-		targetLabel = uint32(frame.code[frame.pc+uint(size)])
+		targetLabel = uint32(frame.function.body[frame.pc+uint32(size)])
 	}
-	frame.pc += uint(size) + 1
+	frame.pc += uint32(size) + 1
 	vm.brToLabel(targetLabel)
 }
 
@@ -1267,15 +1315,15 @@ func (vm *vm) brToLabel(labelIndex uint32) {
 	targetFrame := callFrame.controlStack[targetIndex]
 	callFrame.controlStack = callFrame.controlStack[:targetIndex]
 
-	var arity uint
-	if targetFrame.opcode == loop {
-		arity = targetFrame.inputCount
+	var arity uint32
+	if targetFrame.isLoop {
+		arity = vm.getInputCount(callFrame.module, targetFrame.blockType)
 	} else {
-		arity = targetFrame.outputCount
+		arity = vm.getOutputCount(callFrame.module, targetFrame.blockType)
 	}
 
 	vm.stack.unwind(targetFrame.stackHeight, arity)
-	if targetFrame.opcode == loop {
+	if targetFrame.isLoop {
 		vm.pushControlFrame(targetFrame)
 	}
 
@@ -1292,7 +1340,7 @@ func (vm *vm) handleCallIndirect(frame *callFrame) error {
 	typeIndex := uint32(frame.next())
 	tableIndex := uint32(frame.next())
 
-	expectedType := vm.currentModuleInstance().types[typeIndex]
+	expectedType := vm.currentCallFrame().module.types[typeIndex]
 	table := vm.getTable(tableIndex)
 
 	elementIndex := vm.stack.popInt32()
@@ -1374,7 +1422,7 @@ func (vm *vm) handleMemoryGrow(frame *callFrame) {
 
 func (vm *vm) handleRefFunc(frame *callFrame) {
 	funcIndex := uint32(frame.next())
-	storeIndex := vm.currentModuleInstance().funcAddrs[funcIndex]
+	storeIndex := vm.currentCallFrame().module.funcAddrs[funcIndex]
 	vm.stack.pushInt32(int32(storeIndex))
 }
 
@@ -1422,7 +1470,7 @@ func (vm *vm) handleTableInit(frame *callFrame) error {
 		}
 		return table.Init(n, d, s, element.functionIndexes)
 	case passiveElementMode:
-		moduleInstance := vm.currentModuleInstance()
+		moduleInstance := vm.currentCallFrame().module
 		storeIndexes := toStoreFuncIndexes(moduleInstance, element.functionIndexes)
 		return table.Init(n, d, s, storeIndexes)
 	default:
@@ -1471,18 +1519,6 @@ func (vm *vm) handleI8x16Shuffle(frame *callFrame) {
 	}
 
 	vm.stack.pushV128(simdI8x16Shuffle(v1, v2, lanes))
-}
-
-func (vm *vm) handleBinaryInt32(op func(a, b int32) int32) {
-	b := vm.stack.popInt32()
-	a := vm.stack.popInt32()
-	vm.stack.pushInt32(op(a, b))
-}
-
-func (vm *vm) handleBinaryInt64(op func(a, b int64) int64) {
-	b := vm.stack.popInt64()
-	a := vm.stack.popInt64()
-	vm.stack.pushInt64(op(a, b))
 }
 
 func (vm *vm) handleBinaryFloat32(op func(a, b float32) float32) {
@@ -1709,17 +1745,30 @@ func handleSimdReplaceLane[T wasmNumber](
 	vm.stack.pushV128(replaceLane(vector, laneIndex, laneValue))
 }
 
-func (vm *vm) getBlockInputOutputCount(blockType int32) (uint, uint) {
+func (vm *vm) getInputCount(module *ModuleInstance, blockType int32) uint32 {
 	if blockType == -0x40 { // empty block type.
-		return 0, 0
+		return 0
 	}
 
 	if blockType >= 0 { // type index.
-		funcType := vm.currentModuleInstance().types[blockType]
-		return uint(len(funcType.ParamTypes)), uint(len(funcType.ResultTypes))
+		funcType := module.types[blockType]
+		return uint32(len(funcType.ParamTypes))
 	}
 
-	return 0, 1 // value type.
+	return 0 // value type.
+}
+
+func (vm *vm) getOutputCount(module *ModuleInstance, blockType int32) uint32 {
+	if blockType == -0x40 { // empty block type.
+		return 0
+	}
+
+	if blockType >= 0 { // type index.
+		funcType := module.types[blockType]
+		return uint32(len(funcType.ResultTypes))
+	}
+
+	return 1 // value type.
 }
 
 func (vm *vm) pushControlFrame(frame controlFrame) {
@@ -1891,31 +1940,31 @@ func toStoreFuncIndexes(
 }
 
 func (vm *vm) getFunction(localIndex uint32) FunctionInstance {
-	functionIndex := vm.currentModuleInstance().funcAddrs[localIndex]
+	functionIndex := vm.currentCallFrame().module.funcAddrs[localIndex]
 	return vm.store.funcs[functionIndex]
 }
 
 func (vm *vm) getTable(localIndex uint32) *Table {
-	tableIndex := vm.currentModuleInstance().tableAddrs[localIndex]
+	tableIndex := vm.currentCallFrame().module.tableAddrs[localIndex]
 	return vm.store.tables[tableIndex]
 }
 
 func (vm *vm) getMemory(localIndex uint32) *Memory {
-	memoryIndex := vm.currentModuleInstance().memAddrs[localIndex]
+	memoryIndex := vm.currentCallFrame().module.memAddrs[localIndex]
 	return vm.store.memories[memoryIndex]
 }
 
 func (vm *vm) getGlobal(localIndex uint32) *Global {
-	globalIndex := vm.currentModuleInstance().globalAddrs[localIndex]
+	globalIndex := vm.currentCallFrame().module.globalAddrs[localIndex]
 	return vm.store.globals[globalIndex]
 }
 
 func (vm *vm) getElement(localIndex uint32) *elementSegment {
-	elementIndex := vm.currentModuleInstance().elemAddrs[localIndex]
+	elementIndex := vm.currentCallFrame().module.elemAddrs[localIndex]
 	return &vm.store.elements[elementIndex]
 }
 
 func (vm *vm) getData(localIndex uint32) *dataSegment {
-	dataIndex := vm.currentModuleInstance().dataAddrs[localIndex]
+	dataIndex := vm.currentCallFrame().module.dataAddrs[localIndex]
 	return &vm.store.datas[dataIndex]
 }
