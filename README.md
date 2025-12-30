@@ -64,7 +64,7 @@ func main() {
 ### Using Host Functions
 
 Extend your WebAssembly modules with custom Go functions and more using 
-`ImportBuilder`:
+`ModuleImportBuilder`:
 
 ```go
 // Create imports before instantiation

@@ -11,4 +11,3 @@ disable = [
 
 [tool.autopep8]
 indent-size = 2
-
