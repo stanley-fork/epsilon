@@ -80,6 +80,129 @@ func mkdirat(dir *os.File, path string, mode uint32) error {
 	return nil
 }
 
+// stat returns the attributes of a file or directory relative to a directory.
+// This is similar to fstatat in POSIX.
+//
+// Parameters:
+//   - dir: the directory os.File to stat relative to
+//   - path: the relative path of the file or directory to inspect
+//   - lookupFlags: flags for symlink handling (lookupFlagsSymlinkFollow)
+//
+// Returns the filestat and an error if the operation fails.
+func stat(dir *os.File, path string, lookupFlags int32) (filestat, error) {
+	return statInternal(dir, dir, "", path, lookupFlags, 0)
+}
+
+// statInternal implements the core stat logic with symlink resolution.
+func statInternal(
+	root *os.File,
+	currentDir *os.File,
+	virtualPath string,
+	path string,
+	lookupFlags int32,
+	depth int,
+) (filestat, error) {
+	if depth >= maxSymlinkDepth {
+		return filestat{}, syscall.ELOOP
+	}
+
+	if !filepath.IsLocal(path) {
+		return filestat{}, os.ErrInvalid
+	}
+
+	components := splitPath(path)
+	if len(components) == 0 {
+		return filestat{}, os.ErrInvalid
+	}
+
+	// Handle special case of stat on "." (the directory itself)
+	if len(components) == 1 && components[0] == "." {
+		var statBuf unix.Stat_t
+		if err := unix.Fstat(int(currentDir.Fd()), &statBuf); err != nil {
+			return filestat{}, mapErrno(err)
+		}
+		return statFromUnix(&statBuf), nil
+	}
+
+	parentFd, currentVirtualPath, err := walkToParent(
+		currentDir,
+		virtualPath,
+		components,
+	)
+	if err != nil {
+		return filestat{}, err
+	}
+
+	if parentFd != int(currentDir.Fd()) {
+		defer unix.Close(parentFd)
+	}
+
+	finalName := components[len(components)-1]
+	followSymlink := lookupFlags&lookupFlagsSymlinkFollow != 0
+
+	// Always stat with AT_SYMLINK_NOFOLLOW first to check if it's a symlink
+	var statBuf unix.Stat_t
+	flags := unix.AT_SYMLINK_NOFOLLOW
+	if err := unix.Fstatat(parentFd, finalName, &statBuf, flags); err != nil {
+		return filestat{}, mapErrno(err)
+	}
+
+	// If it's not a symlink, or we don't want to follow, return immediately
+	if statBuf.Mode&unix.S_IFMT != unix.S_IFLNK || !followSymlink {
+		return statFromUnix(&statBuf), nil
+	}
+
+	// It's a symlink and we need to follow it securely.
+	// Read the symlink target and resolve it within the sandbox.
+	target, err := readlinkat(parentFd, finalName)
+	if err != nil {
+		return filestat{}, mapErrno(err)
+	}
+
+	resolvedPath := filepath.Clean(filepath.Join(currentVirtualPath, target))
+
+	if !filepath.IsLocal(resolvedPath) {
+		return filestat{}, os.ErrPermission
+	}
+
+	// Recursively stat from the root with the resolved path.
+	return statInternal(root, root, "", resolvedPath, lookupFlags, depth+1)
+}
+
+// statFromUnix converts a unix.Stat_t to a filestat.
+func statFromUnix(s *unix.Stat_t) filestat {
+	return filestat{
+		dev:      uint64(s.Dev),
+		ino:      s.Ino,
+		filetype: fileTypeFromMode(uint32(s.Mode)),
+		nlink:    uint64(s.Nlink),
+		size:     uint64(s.Size),
+		atim:     uint64(unix.TimespecToNsec(s.Atim)),
+		mtim:     uint64(unix.TimespecToNsec(s.Mtim)),
+		ctim:     uint64(unix.TimespecToNsec(s.Ctim)),
+	}
+}
+
+// fileTypeFromMode extracts the WASI file type from a Unix mode.
+func fileTypeFromMode(mode uint32) int8 {
+	switch mode & unix.S_IFMT {
+	case unix.S_IFBLK:
+		return int8(fileTypeBlockDevice)
+	case unix.S_IFCHR:
+		return int8(fileTypeCharacterDevice)
+	case unix.S_IFDIR:
+		return int8(fileTypeDirectory)
+	case unix.S_IFREG:
+		return int8(fileTypeRegularFile)
+	case unix.S_IFSOCK:
+		return int8(fileTypeSocketStream)
+	case unix.S_IFLNK:
+		return int8(fileTypeSymbolicLink)
+	default:
+		return int8(fileTypeUnknown)
+	}
+}
+
 // openat opens a file or directory relative to a directory.
 // This is similar to openat in POSIX.
 //
@@ -225,7 +348,7 @@ func openFinalSecure(
 	}
 
 	// The target is a symlink and we need to follow it. Read the symlink target.
-	target, err := readlinkat(parentDir, name)
+	target, err := readlinkat(int(parentDir.Fd()), name)
 	if err != nil {
 		return nil, mapErrno(err)
 	}
@@ -256,12 +379,11 @@ func openFinalSecure(
 	)
 }
 
-// readlinkat reads the target of a symlink relative to a directory.
-func readlinkat(dir *os.File, name string) (string, error) {
-	// Start with a reasonable buffer size
+// readlinkat reads the target of a symlink relative to a directory fd.
+func readlinkat(dirFd int, name string) (string, error) {
 	buf := make([]byte, 256)
 	for {
-		n, err := unix.Readlinkat(int(dir.Fd()), name, buf)
+		n, err := unix.Readlinkat(dirFd, name, buf)
 		if err != nil {
 			return "", err
 		}

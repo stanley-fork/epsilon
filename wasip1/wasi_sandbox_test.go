@@ -690,3 +690,270 @@ func TestMkdirat_ParentNotExistsFails(t *testing.T) {
 		t.Errorf("expected os.ErrNotExist, got %v", err)
 	}
 }
+
+func TestStat_BasicFile(t *testing.T) {
+	dir := t.TempDir()
+	testFile := filepath.Join(dir, "test.txt")
+	content := []byte("hello")
+	if err := os.WriteFile(testFile, content, 0o644); err != nil {
+		t.Fatalf("failed to create file: %v", err)
+	}
+	dirFd, err := os.Open(dir)
+	if err != nil {
+		t.Fatalf("failed to open dir: %v", err)
+	}
+	defer dirFd.Close()
+
+	fs, err := stat(dirFd, "test.txt", 0)
+	if err != nil {
+		t.Fatalf("stat failed: %v", err)
+	}
+
+	if fs.filetype != int8(fileTypeRegularFile) {
+		t.Errorf("expected regular file, got filetype %d", fs.filetype)
+	}
+	if fs.size != uint64(len(content)) {
+		t.Errorf("expected size %d, got %d", len(content), fs.size)
+	}
+}
+
+func TestStat_Directory(t *testing.T) {
+	dir := t.TempDir()
+	subdir := filepath.Join(dir, "subdir")
+	if err := os.Mkdir(subdir, 0o755); err != nil {
+		t.Fatalf("failed to create subdir: %v", err)
+	}
+	dirFd, err := os.Open(dir)
+	if err != nil {
+		t.Fatalf("failed to open dir: %v", err)
+	}
+	defer dirFd.Close()
+
+	fs, err := stat(dirFd, "subdir", 0)
+	if err != nil {
+		t.Fatalf("stat failed: %v", err)
+	}
+
+	if fs.filetype != int8(fileTypeDirectory) {
+		t.Errorf("expected directory, got filetype %d", fs.filetype)
+	}
+}
+
+func TestStat_CurrentDir(t *testing.T) {
+	dir := t.TempDir()
+	dirFd, err := os.Open(dir)
+	if err != nil {
+		t.Fatalf("failed to open dir: %v", err)
+	}
+	defer dirFd.Close()
+
+	fs, err := stat(dirFd, ".", 0)
+	if err != nil {
+		t.Fatalf("stat . failed: %v", err)
+	}
+
+	if fs.filetype != int8(fileTypeDirectory) {
+		t.Errorf("expected directory, got filetype %d", fs.filetype)
+	}
+}
+
+func TestStat_NestedPath(t *testing.T) {
+	dir := t.TempDir()
+	nested := filepath.Join(dir, "a", "b")
+	if err := os.MkdirAll(nested, 0o755); err != nil {
+		t.Fatalf("failed to create nested dirs: %v", err)
+	}
+	testFile := filepath.Join(nested, "test.txt")
+	if err := os.WriteFile(testFile, []byte("nested"), 0o644); err != nil {
+		t.Fatalf("failed to create file: %v", err)
+	}
+	dirFd, err := os.Open(dir)
+	if err != nil {
+		t.Fatalf("failed to open dir: %v", err)
+	}
+	defer dirFd.Close()
+
+	fs, err := stat(dirFd, "a/b/test.txt", 0)
+	if err != nil {
+		t.Fatalf("stat nested failed: %v", err)
+	}
+
+	if fs.filetype != int8(fileTypeRegularFile) {
+		t.Errorf("expected regular file, got filetype %d", fs.filetype)
+	}
+}
+
+func TestStat_SymlinkNoFollow(t *testing.T) {
+	dir := t.TempDir()
+	testFile := filepath.Join(dir, "real.txt")
+	if err := os.WriteFile(testFile, []byte("content"), 0o644); err != nil {
+		t.Fatalf("failed to create file: %v", err)
+	}
+	symlink := filepath.Join(dir, "link")
+	if err := os.Symlink("real.txt", symlink); err != nil {
+		t.Fatalf("failed to create symlink: %v", err)
+	}
+	dirFd, err := os.Open(dir)
+	if err != nil {
+		t.Fatalf("failed to open dir: %v", err)
+	}
+	defer dirFd.Close()
+
+	// Without SYMLINK_FOLLOW, should stat the symlink itself
+	fs, err := stat(dirFd, "link", 0)
+	if err != nil {
+		t.Fatalf("stat symlink failed: %v", err)
+	}
+
+	if fs.filetype != int8(fileTypeSymbolicLink) {
+		t.Errorf("expected symbolic link, got filetype %d", fs.filetype)
+	}
+}
+
+func TestStat_SymlinkFollow(t *testing.T) {
+	dir := t.TempDir()
+	content := []byte("content")
+	testFile := filepath.Join(dir, "real.txt")
+	if err := os.WriteFile(testFile, content, 0o644); err != nil {
+		t.Fatalf("failed to create file: %v", err)
+	}
+	symlink := filepath.Join(dir, "link")
+	if err := os.Symlink("real.txt", symlink); err != nil {
+		t.Fatalf("failed to create symlink: %v", err)
+	}
+	dirFd, err := os.Open(dir)
+	if err != nil {
+		t.Fatalf("failed to open dir: %v", err)
+	}
+	defer dirFd.Close()
+
+	// With SYMLINK_FOLLOW, should stat the target file
+	fs, err := stat(dirFd, "link", lookupFlagsSymlinkFollow)
+	if err != nil {
+		t.Fatalf("stat symlink with follow failed: %v", err)
+	}
+
+	if fs.filetype != int8(fileTypeRegularFile) {
+		t.Errorf("expected regular file, got filetype %d", fs.filetype)
+	}
+	if fs.size != uint64(len(content)) {
+		t.Errorf("expected size %d, got %d", len(content), fs.size)
+	}
+}
+
+func TestStat_IntermediateSymlinkBlocked(t *testing.T) {
+	dir := t.TempDir()
+	escape := t.TempDir()
+	// Create a file in the escape directory
+	testFile := filepath.Join(escape, "secret.txt")
+	if err := os.WriteFile(testFile, []byte("secret"), 0o644); err != nil {
+		t.Fatalf("failed to create file: %v", err)
+	}
+	// Create symlink inside sandbox pointing to escape location
+	if err := os.Symlink(escape, filepath.Join(dir, "escape")); err != nil {
+		t.Fatalf("failed to create symlink: %v", err)
+	}
+	dirFd, err := os.Open(dir)
+	if err != nil {
+		t.Fatalf("failed to open dir: %v", err)
+	}
+	defer dirFd.Close()
+
+	// Attempt to stat through the symlink should fail
+	_, err = stat(dirFd, "escape/secret.txt", 0)
+	if err == nil {
+		t.Fatal("stat through symlink should fail")
+	}
+}
+
+func TestStat_DotDotRejected(t *testing.T) {
+	dir := t.TempDir()
+	dirFd, err := os.Open(dir)
+	if err != nil {
+		t.Fatalf("failed to open dir: %v", err)
+	}
+	defer dirFd.Close()
+
+	_, err = stat(dirFd, "../etc/passwd", 0)
+	if err != os.ErrInvalid {
+		t.Errorf("expected os.ErrInvalid, got %v", err)
+	}
+}
+
+func TestStat_AbsolutePathRejected(t *testing.T) {
+	dir := t.TempDir()
+	dirFd, err := os.Open(dir)
+	if err != nil {
+		t.Fatalf("failed to open dir: %v", err)
+	}
+	defer dirFd.Close()
+
+	_, err = stat(dirFd, "/etc/passwd", 0)
+	if err != os.ErrInvalid {
+		t.Errorf("expected os.ErrInvalid, got %v", err)
+	}
+}
+
+func TestStat_NonExistent(t *testing.T) {
+	dir := t.TempDir()
+	dirFd, err := os.Open(dir)
+	if err != nil {
+		t.Fatalf("failed to open dir: %v", err)
+	}
+	defer dirFd.Close()
+
+	_, err = stat(dirFd, "nonexistent.txt", 0)
+	if err != os.ErrNotExist {
+		t.Errorf("expected os.ErrNotExist, got %v", err)
+	}
+}
+
+func TestStat_SymlinkFollowEscapeBlocked(t *testing.T) {
+	dir := t.TempDir()
+	// Create a symlink pointing outside the sandbox
+	escapeLink := filepath.Join(dir, "escape")
+	if err := os.Symlink("/etc/passwd", escapeLink); err != nil {
+		t.Fatalf("failed to create symlink: %v", err)
+	}
+	dirFd, err := os.Open(dir)
+	if err != nil {
+		t.Fatalf("failed to open dir: %v", err)
+	}
+	defer dirFd.Close()
+
+	// With SYMLINK_FOLLOW, should NOT follow to /etc/passwd (sandbox escape)
+	_, err = stat(dirFd, "escape", lookupFlagsSymlinkFollow)
+	if err == nil {
+		t.Fatal("stat with symlink follow should fail for escape symlink")
+	}
+	if err != os.ErrPermission {
+		t.Errorf("expected os.ErrPermission, got %v", err)
+	}
+}
+
+func TestStat_SymlinkChainWithDotDotEscapeBlocked(t *testing.T) {
+	dir := t.TempDir()
+	// Create: root/subdir/link -> ../../etc/passwd
+	subdir := filepath.Join(dir, "subdir")
+	if err := os.Mkdir(subdir, 0o755); err != nil {
+		t.Fatalf("failed to create subdir: %v", err)
+	}
+	escapeLink := filepath.Join(subdir, "link")
+	if err := os.Symlink("../../etc/passwd", escapeLink); err != nil {
+		t.Fatalf("failed to create symlink: %v", err)
+	}
+	dirFd, err := os.Open(dir)
+	if err != nil {
+		t.Fatalf("failed to open dir: %v", err)
+	}
+	defer dirFd.Close()
+
+	// With SYMLINK_FOLLOW, should NOT follow (escapes via ..)
+	_, err = stat(dirFd, "subdir/link", lookupFlagsSymlinkFollow)
+	if err == nil {
+		t.Fatal("stat with symlink follow should fail for .. escape")
+	}
+	if err != os.ErrPermission {
+		t.Errorf("expected os.ErrPermission, got %v", err)
+	}
+}
