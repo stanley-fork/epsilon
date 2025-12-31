@@ -41,6 +41,9 @@ import (
 // maxSymlinkDepth is the maximum number of symlink resolutions allowed.
 const maxSymlinkDepth = 40
 
+// defaultFileMode is the default permission mode for newly created files.
+const defaultFileMode = 0o600
+
 // mkdirat creates a directory relative to a directory.
 // This is similar to mkdirat in POSIX.
 //
@@ -228,8 +231,7 @@ func openat(
 		flags |= unix.O_SYNC
 	}
 
-	// Default to 0o600 (owner read/write only) for secure file creation.
-	fd, err := unix.Openat(int(parentDir.Fd()), name, flags, 0o600)
+	fd, err := unix.Openat(int(parentDir.Fd()), name, flags, defaultFileMode)
 	if err != nil {
 		return nil, mapErrno(err)
 	}
@@ -336,20 +338,12 @@ func walkToParent(
 					return 0, "", depth, err
 				}
 
-				// Resolve the symlink target.
-				// Absolute symlinks are resolved relative to the sandbox root.
-				// Relative symlinks are resolved relative to the current path.
-				var resolvedPath string
-				if filepath.IsAbs(target) {
-					resolvedPath = strings.TrimPrefix(target, string(filepath.Separator))
-				} else {
-					resolvedPath = filepath.Clean(filepath.Join(parentPath, target))
-				}
-				if !filepath.IsLocal(resolvedPath) {
+				resolvedPath, pathErr := resolveSymlinkTarget(parentPath, target)
+				if pathErr != nil {
 					if currentDirFd != dirFd {
 						unix.Close(currentDirFd)
 					}
-					return 0, "", depth, os.ErrPermission
+					return 0, "", depth, pathErr
 				}
 
 				// Build the new full path: resolved symlink + remaining components
@@ -467,17 +461,28 @@ func mapErrno(err error) error {
 			return os.ErrPermission
 		case syscall.EINVAL:
 			return os.ErrInvalid
-		case syscall.ELOOP:
-			// Keep ELOOP as-is so openFinalSecure can detect symlinks
-			return syscall.ELOOP
-		case syscall.ENOTDIR:
-			return syscall.ENOTDIR
-		case syscall.EISDIR:
-			return syscall.EISDIR
+		case syscall.ELOOP, syscall.ENOTDIR, syscall.EISDIR:
+			return errno
 		}
 	}
 
 	return err
+}
+
+// resolveSymlinkTarget computes a sandbox-safe resolved path for a symlink.
+// Absolute symlinks are resolved relative to the sandbox root, relative
+// symlinks are resolved relative to parentPath.
+func resolveSymlinkTarget(parentPath, target string) (string, error) {
+	var resolved string
+	if filepath.IsAbs(target) {
+		resolved = strings.TrimPrefix(target, string(filepath.Separator))
+	} else {
+		resolved = filepath.Clean(filepath.Join(parentPath, target))
+	}
+	if !filepath.IsLocal(resolved) {
+		return "", os.ErrPermission
+	}
+	return resolved, nil
 }
 
 // resolvePath resolves a path relative to a directory os.File. It returns the
@@ -559,17 +564,10 @@ func resolvePath(
 	if parentFd != int(dir.Fd()) {
 		unix.Close(parentFd)
 	}
-	// Resolve the symlink target.
-	// Absolute symlinks are resolved relative to the sandbox root.
-	// Relative symlinks are resolved relative to the symlink's containing dir.
-	var resolvedPath string
-	if filepath.IsAbs(target) {
-		resolvedPath = strings.TrimPrefix(target, string(filepath.Separator))
-	} else {
-		resolvedPath = filepath.Clean(filepath.Join(parentPath, target))
-	}
-	if !filepath.IsLocal(resolvedPath) {
-		return 0, "", os.ErrPermission
+
+	resolvedPath, pathErr := resolveSymlinkTarget(parentPath, target)
+	if pathErr != nil {
+		return 0, "", pathErr
 	}
 
 	// Restart resolution with the new target and updated depth
