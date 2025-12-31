@@ -3,6 +3,7 @@
 package wasip1
 
 import (
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -188,7 +189,7 @@ func TestOpenat_CreateExclusive(t *testing.T) {
 		f.Close()
 		t.Fatal("expected error for O_CREAT|O_EXCL on existing file")
 	}
-	if err != os.ErrExist {
+	if !errors.Is(err, os.ErrExist) {
 		t.Errorf("expected os.ErrExist, got %v", err)
 	}
 }
@@ -378,7 +379,7 @@ func TestOpenat_NonExistent(t *testing.T) {
 	defer dirFd.Close()
 
 	_, err := openat(dirFd, "nonexistent.txt", false, 0, 0, uint64(RightsFdRead))
-	if err != os.ErrNotExist {
+	if !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("expected os.ErrNotExist, got %v", err)
 	}
 }
@@ -497,7 +498,7 @@ func TestMkdirat_ExistingDirectoryFails(t *testing.T) {
 	defer dirFd.Close()
 
 	err := mkdirat(dirFd, "existing", 0o755)
-	if err != os.ErrExist {
+	if !errors.Is(err, os.ErrExist) {
 		t.Errorf("expected os.ErrExist, got %v", err)
 	}
 }
@@ -507,7 +508,7 @@ func TestMkdirat_ParentNotExistsFails(t *testing.T) {
 	defer dirFd.Close()
 
 	err := mkdirat(dirFd, "nonexistent/newdir", 0o755)
-	if err != os.ErrNotExist {
+	if !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("expected os.ErrNotExist, got %v", err)
 	}
 }
@@ -649,7 +650,7 @@ func TestStat_NonExistent(t *testing.T) {
 	defer dirFd.Close()
 
 	_, err := stat(dirFd, "nonexistent.txt", false)
-	if err != os.ErrNotExist {
+	if !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("expected os.ErrNotExist, got %v", err)
 	}
 }

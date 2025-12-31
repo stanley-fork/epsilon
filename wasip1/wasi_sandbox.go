@@ -67,7 +67,7 @@ func mkdirat(dir *os.File, path string, mode uint32) error {
 
 	finalName := components[len(components)-1]
 	if err := unix.Mkdirat(parentFd, finalName, mode); err != nil {
-		return mapErrno(err)
+		return err
 	}
 
 	return nil
@@ -94,7 +94,7 @@ func stat(dir *os.File, path string, followSymlinks bool) (filestat, error) {
 	var statBuf unix.Stat_t
 	flags := unix.AT_SYMLINK_NOFOLLOW
 	if err := unix.Fstatat(dirFd, fileName, &statBuf, flags); err != nil {
-		return filestat{}, mapErrno(err)
+		return filestat{}, err
 	}
 	return statFromUnix(&statBuf), nil
 }
@@ -129,7 +129,7 @@ func utimes(
 	times := buildTimespec(atim, mtim, fstFlags)
 	flags := unix.AT_SYMLINK_NOFOLLOW
 	if err := unix.UtimesNanoAt(dirFd, fileName, times, flags); err != nil {
-		return mapErrno(err)
+		return err
 	}
 	return nil
 }
@@ -170,7 +170,7 @@ func linkat(
 
 	err = unix.Linkat(oldDirFd, oldName, newDirFd, newName, 0)
 	if err != nil {
-		return mapErrno(err)
+		return err
 	}
 
 	return nil
@@ -197,7 +197,7 @@ func readlink(dir *os.File, path string) (string, error) {
 	for {
 		n, err := unix.Readlinkat(dirFd, name, buf)
 		if err != nil {
-			return "", mapErrno(err)
+			return "", err
 		}
 		if n < len(buf) {
 			return string(buf[:n]), nil
@@ -225,7 +225,7 @@ func rmdirat(dir *os.File, path string) error {
 
 	err = unix.Unlinkat(dirFd, name, unix.AT_REMOVEDIR)
 	if err != nil {
-		return mapErrno(err)
+		return err
 	}
 
 	return nil
@@ -265,7 +265,7 @@ func renameat(
 
 	err = unix.Renameat(oldDirFd, oldName, newDirFd, newName)
 	if err != nil {
-		return mapErrno(err)
+		return err
 	}
 
 	return nil
@@ -291,7 +291,7 @@ func symlinkat(target string, dir *os.File, path string) error {
 
 	err = unix.Symlinkat(target, dirFd, name)
 	if err != nil {
-		return mapErrno(err)
+		return err
 	}
 
 	return nil
@@ -316,7 +316,7 @@ func unlinkat(dir *os.File, path string) error {
 
 	err = unix.Unlinkat(dirFd, name, 0)
 	if err != nil {
-		return mapErrno(err)
+		return err
 	}
 
 	return nil
@@ -410,7 +410,7 @@ func openat(
 
 	fd, err := unix.Openat(int(parentDir.Fd()), name, flags, defaultFileMode)
 	if err != nil {
-		return nil, mapErrno(err)
+		return nil, err
 	}
 
 	return os.NewFile(uintptr(fd), name), nil
@@ -541,7 +541,7 @@ func walkToParent(
 			if currentDirFd != dirFd {
 				unix.Close(currentDirFd)
 			}
-			return 0, "", depth, mapErrno(err)
+			return 0, "", depth, err
 		}
 
 		// Close intermediate fds we opened (but not the original dir)
@@ -621,31 +621,6 @@ func isRelativePath(path string) bool {
 	return true
 }
 
-// mapErrno converts a syscall error to an appropriate os error.
-func mapErrno(err error) error {
-	if err == nil {
-		return nil
-	}
-
-	var errno syscall.Errno
-	if errors.As(err, &errno) {
-		switch errno {
-		case syscall.ENOENT:
-			return os.ErrNotExist
-		case syscall.EEXIST:
-			return os.ErrExist
-		case syscall.EACCES, syscall.EPERM:
-			return os.ErrPermission
-		case syscall.EINVAL:
-			return os.ErrInvalid
-		case syscall.ELOOP, syscall.ENOTDIR, syscall.EISDIR:
-			return errno
-		}
-	}
-
-	return err
-}
-
 // resolveSymlinkTarget computes a sandbox-safe resolved path for a symlink.
 // Absolute symlinks are resolved relative to the sandbox root, relative
 // symlinks are resolved relative to parentPath.
@@ -719,7 +694,7 @@ func resolvePath(
 		if parentFd != int(dir.Fd()) {
 			unix.Close(parentFd)
 		}
-		return 0, "", mapErrno(err)
+		return 0, "", err
 	}
 
 	// If it's not a symlink, or we don't want to follow, return immediately
@@ -734,7 +709,7 @@ func resolvePath(
 		if parentFd != int(dir.Fd()) {
 			unix.Close(parentFd)
 		}
-		return 0, "", mapErrno(err)
+		return 0, "", err
 	}
 
 	// We are done with parentFd for this level.
