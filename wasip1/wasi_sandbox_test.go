@@ -33,8 +33,8 @@ func link(path, target string) fsEntry {
 }
 
 // testFS creates a filesystem structure for testing and returns the root
-// directory path and an open file descriptor to it. The caller must close
-// the returned *os.File. Parent directories are created automatically.
+// directory path and os.File. The caller must close the returned *os.File.
+// Parent directories are created automatically.
 func testFS(t *testing.T, entries ...fsEntry) (string, *os.File) {
 	t.Helper()
 	root := t.TempDir()
@@ -76,7 +76,7 @@ func TestOpenat_BasicFile(t *testing.T) {
 	_, dirFd := testFS(t, file("test.txt", "hello"))
 	defer dirFd.Close()
 
-	f, err := openat(dirFd, "test.txt", 0, 0, 0, uint64(RightsFdRead))
+	f, err := openat(dirFd, "test.txt", false, 0, 0, uint64(RightsFdRead))
 	if err != nil {
 		t.Fatalf("pathOpen failed: %v", err)
 	}
@@ -95,7 +95,7 @@ func TestOpenat_NestedPath(t *testing.T) {
 	_, dirFd := testFS(t, file("a/b/c/test.txt", "nested"))
 	defer dirFd.Close()
 
-	f, err := openat(dirFd, "a/b/c/test.txt", 0, 0, 0, uint64(RightsFdRead))
+	f, err := openat(dirFd, "a/b/c/test.txt", false, 0, 0, uint64(RightsFdRead))
 	if err != nil {
 		t.Fatalf("pathOpen failed: %v", err)
 	}
@@ -114,7 +114,8 @@ func TestOpenat_Directory(t *testing.T) {
 	_, dirFd := testFS(t, dir("subdir"))
 	defer dirFd.Close()
 
-	f, err := openat(dirFd, "subdir", 0, int32(oFlagsDirectory), 0, uint64(RightsFdRead))
+	flags := int32(oFlagsDirectory)
+	f, err := openat(dirFd, "subdir", false, flags, 0, uint64(RightsFdRead))
 	if err != nil {
 		t.Fatalf("pathOpen failed: %v", err)
 	}
@@ -133,7 +134,7 @@ func TestOpenat_TrailingSlashOnDirectory(t *testing.T) {
 	_, dirFd := testFS(t, dir("subdir"))
 	defer dirFd.Close()
 
-	f, err := openat(dirFd, "subdir/", 0, 0, 0, uint64(RightsFdRead))
+	f, err := openat(dirFd, "subdir/", false, 0, 0, uint64(RightsFdRead))
 	if err != nil {
 		t.Fatalf("pathOpen with trailing slash on directory failed: %v", err)
 	}
@@ -152,7 +153,7 @@ func TestOpenat_TrailingSlashOnFile(t *testing.T) {
 	_, dirFd := testFS(t, file("file.txt", "content"))
 	defer dirFd.Close()
 
-	f, err := openat(dirFd, "file.txt/", 0, 0, 0, uint64(RightsFdRead))
+	f, err := openat(dirFd, "file.txt/", false, 0, 0, uint64(RightsFdRead))
 	if err == nil {
 		f.Close()
 		t.Fatal("pathOpen with trailing slash on file should fail")
@@ -163,7 +164,8 @@ func TestOpenat_CreateFile(t *testing.T) {
 	_, dirFd := testFS(t)
 	defer dirFd.Close()
 
-	f, err := openat(dirFd, "file.txt", 0, int32(oFlagsCreat), 0, uint64(RightsFdRead|RightsFdWrite))
+	flags := int32(oFlagsCreat)
+	f, err := openat(dirFd, "file.txt", false, flags, 0, uint64(RightsFdWrite))
 	if err != nil {
 		t.Fatalf("pathOpen failed: %v", err)
 	}
@@ -175,10 +177,11 @@ func TestOpenat_CreateFile(t *testing.T) {
 }
 
 func TestOpenat_CreateExclusive(t *testing.T) {
-	_, dirFd := testFS(t, file("existing.txt", "existing"))
+	_, dirFd := testFS(t, file("exists.txt", "existing"))
 	defer dirFd.Close()
 
-	f, err := openat(dirFd, "existing.txt", 0, int32(oFlagsCreat|oFlagsExcl), 0, uint64(RightsFdWrite))
+	flags := int32(oFlagsCreat | oFlagsExcl)
+	f, err := openat(dirFd, "exists.txt", false, flags, 0, uint64(RightsFdWrite))
 	if err == nil {
 		f.Close()
 		t.Fatal("expected error for O_CREAT|O_EXCL on existing file")
@@ -192,7 +195,8 @@ func TestOpenat_Truncate(t *testing.T) {
 	root, dirFd := testFS(t, file("trunc.txt", "content"))
 	defer dirFd.Close()
 
-	f, err := openat(dirFd, "trunc.txt", 0, int32(oFlagsTrunc), 0, uint64(RightsFdWrite))
+	flags := int32(oFlagsTrunc)
+	f, err := openat(dirFd, "trunc.txt", false, flags, 0, uint64(RightsFdWrite))
 	if err != nil {
 		t.Fatalf("pathOpen failed: %v", err)
 	}
@@ -211,7 +215,7 @@ func TestOpenat_SymlinkEscapeBlocked(t *testing.T) {
 	_, dirFd := testFS(t, link("escape", "/etc"))
 	defer dirFd.Close()
 
-	_, err := openat(dirFd, "escape", 0, 0, 0, uint64(RightsFdRead))
+	_, err := openat(dirFd, "escape", false, 0, 0, uint64(RightsFdRead))
 	if err == nil {
 		t.Fatal("expected error when opening symlink with O_NOFOLLOW")
 	}
@@ -224,7 +228,7 @@ func TestOpenat_SymlinkFollowAllowed(t *testing.T) {
 	)
 	defer dirFd.Close()
 
-	f, err := openat(dirFd, "link", lookupFlagsSymlinkFollow, 0, 0, uint64(RightsFdRead))
+	f, err := openat(dirFd, "link", true, 0, 0, uint64(RightsFdRead))
 	if err != nil {
 		t.Fatalf("pathOpen with symlink follow failed: %v", err)
 	}
@@ -243,7 +247,7 @@ func TestOpenat_SymlinkFollowEscapeBlocked(t *testing.T) {
 	_, dirFd := testFS(t, link("escape", "/etc/passwd"))
 	defer dirFd.Close()
 
-	f, err := openat(dirFd, "escape", lookupFlagsSymlinkFollow, 0, 0, uint64(RightsFdRead))
+	f, err := openat(dirFd, "escape", true, 0, 0, uint64(RightsFdRead))
 	if err == nil {
 		f.Close()
 		t.Fatal("symlink escape succeeded with SYMLINK_FOLLOW")
@@ -257,7 +261,7 @@ func TestOpenat_SymlinkWithDotDotInsideSandbox(t *testing.T) {
 	)
 	defer dirFd.Close()
 
-	f, err := openat(dirFd, "subdir/link", lookupFlagsSymlinkFollow, 0, 0, uint64(RightsFdRead))
+	f, err := openat(dirFd, "subdir/link", true, 0, 0, uint64(RightsFdRead))
 	if err != nil {
 		t.Fatalf("pathOpen failed for symlink with .. inside sandbox: %v", err)
 	}
@@ -279,7 +283,7 @@ func TestOpenat_SymlinkCrossDirectory(t *testing.T) {
 	)
 	defer dirFd.Close()
 
-	f, err := openat(dirFd, "a/d/e/link", lookupFlagsSymlinkFollow, 0, 0, uint64(RightsFdRead))
+	f, err := openat(dirFd, "a/d/e/link", true, 0, 0, uint64(RightsFdRead))
 	if err != nil {
 		t.Fatalf("pathOpen failed: %v", err)
 	}
@@ -298,7 +302,7 @@ func TestOpenat_SymlinkWithDotDotEscapeBlocked(t *testing.T) {
 	_, dirFd := testFS(t, link("subdir/link", "../../etc/passwd"))
 	defer dirFd.Close()
 
-	_, err := openat(dirFd, "subdir/link", lookupFlagsSymlinkFollow, 0, 0, uint64(RightsFdRead))
+	_, err := openat(dirFd, "subdir/link", true, 0, 0, uint64(RightsFdRead))
 	if err == nil {
 		t.Fatal("symlink escape via .. succeeded")
 	}
@@ -308,7 +312,7 @@ func TestOpenat_IntermediateSymlinkBlocked(t *testing.T) {
 	_, dirFd := testFS(t, link("escape_dir", "/etc"))
 	defer dirFd.Close()
 
-	_, err := openat(dirFd, "escape_dir/passwd", lookupFlagsSymlinkFollow, 0, 0, uint64(RightsFdRead))
+	_, err := openat(dirFd, "escape_dir/passwd", true, 0, 0, uint64(RightsFdRead))
 	if err == nil {
 		t.Fatal("traversing through symlink succeeded")
 	}
@@ -318,7 +322,7 @@ func TestOpenat_DotDotRejected(t *testing.T) {
 	_, dirFd := testFS(t)
 	defer dirFd.Close()
 
-	_, err := openat(dirFd, "../etc/passwd", 0, 0, 0, uint64(RightsFdRead))
+	_, err := openat(dirFd, "../etc/passwd", false, 0, 0, uint64(RightsFdRead))
 	if err != os.ErrInvalid {
 		t.Errorf("expected os.ErrInvalid, got %v", err)
 	}
@@ -328,7 +332,7 @@ func TestOpenat_AbsolutePathRejected(t *testing.T) {
 	_, dirFd := testFS(t)
 	defer dirFd.Close()
 
-	_, err := openat(dirFd, "/etc/passwd", 0, 0, 0, uint64(RightsFdRead))
+	_, err := openat(dirFd, "/etc/passwd", false, 0, 0, uint64(RightsFdRead))
 	if err != os.ErrInvalid {
 		t.Errorf("expected os.ErrInvalid, got %v", err)
 	}
@@ -338,7 +342,7 @@ func TestOpenat_EmptyPathRejected(t *testing.T) {
 	_, dirFd := testFS(t)
 	defer dirFd.Close()
 
-	_, err := openat(dirFd, "", 0, 0, 0, uint64(RightsFdRead))
+	_, err := openat(dirFd, "", false, 0, 0, uint64(RightsFdRead))
 	if err != os.ErrInvalid {
 		t.Errorf("expected os.ErrInvalid, got %v", err)
 	}
@@ -348,7 +352,8 @@ func TestOpenat_AppendFlag(t *testing.T) {
 	root, dirFd := testFS(t, file("append.txt", "original"))
 	defer dirFd.Close()
 
-	f, err := openat(dirFd, "append.txt", 0, 0, int32(fdFlagsAppend), uint64(RightsFdWrite))
+	flags := int32(fdFlagsAppend)
+	f, err := openat(dirFd, "append.txt", false, 0, flags, uint64(RightsFdWrite))
 	if err != nil {
 		t.Fatalf("pathOpen failed: %v", err)
 	}
@@ -370,7 +375,7 @@ func TestOpenat_NonExistent(t *testing.T) {
 	_, dirFd := testFS(t)
 	defer dirFd.Close()
 
-	_, err := openat(dirFd, "nonexistent.txt", 0, 0, 0, uint64(RightsFdRead))
+	_, err := openat(dirFd, "nonexistent.txt", false, 0, 0, uint64(RightsFdRead))
 	if err != os.ErrNotExist {
 		t.Errorf("expected os.ErrNotExist, got %v", err)
 	}
@@ -380,7 +385,8 @@ func TestOpenat_CurrentDir(t *testing.T) {
 	_, dirFd := testFS(t)
 	defer dirFd.Close()
 
-	f, err := openat(dirFd, ".", 0, int32(oFlagsDirectory), 0, uint64(RightsFdRead))
+	flags := int32(oFlagsDirectory)
+	f, err := openat(dirFd, ".", false, flags, 0, uint64(RightsFdRead))
 	if err != nil {
 		t.Fatalf("pathOpen . failed: %v", err)
 	}
@@ -508,7 +514,7 @@ func TestStat_BasicFile(t *testing.T) {
 	_, dirFd := testFS(t, file("test.txt", "hello"))
 	defer dirFd.Close()
 
-	fs, err := stat(dirFd, "test.txt", 0)
+	fs, err := stat(dirFd, "test.txt", false)
 	if err != nil {
 		t.Fatalf("stat failed: %v", err)
 	}
@@ -525,7 +531,7 @@ func TestStat_Directory(t *testing.T) {
 	_, dirFd := testFS(t, dir("subdir"))
 	defer dirFd.Close()
 
-	fs, err := stat(dirFd, "subdir", 0)
+	fs, err := stat(dirFd, "subdir", false)
 	if err != nil {
 		t.Fatalf("stat failed: %v", err)
 	}
@@ -539,7 +545,7 @@ func TestStat_CurrentDir(t *testing.T) {
 	_, dirFd := testFS(t)
 	defer dirFd.Close()
 
-	fs, err := stat(dirFd, ".", 0)
+	fs, err := stat(dirFd, ".", false)
 	if err != nil {
 		t.Fatalf("stat . failed: %v", err)
 	}
@@ -553,7 +559,7 @@ func TestStat_NestedPath(t *testing.T) {
 	_, dirFd := testFS(t, file("a/b/test.txt", "nested"))
 	defer dirFd.Close()
 
-	fs, err := stat(dirFd, "a/b/test.txt", 0)
+	fs, err := stat(dirFd, "a/b/test.txt", false)
 	if err != nil {
 		t.Fatalf("stat nested failed: %v", err)
 	}
@@ -570,7 +576,7 @@ func TestStat_SymlinkNoFollow(t *testing.T) {
 	)
 	defer dirFd.Close()
 
-	fs, err := stat(dirFd, "link", 0)
+	fs, err := stat(dirFd, "link", false)
 	if err != nil {
 		t.Fatalf("stat symlink failed: %v", err)
 	}
@@ -587,7 +593,7 @@ func TestStat_SymlinkFollow(t *testing.T) {
 	)
 	defer dirFd.Close()
 
-	fs, err := stat(dirFd, "link", lookupFlagsSymlinkFollow)
+	fs, err := stat(dirFd, "link", true)
 	if err != nil {
 		t.Fatalf("stat symlink with follow failed: %v", err)
 	}
@@ -602,13 +608,15 @@ func TestStat_SymlinkFollow(t *testing.T) {
 
 func TestStat_IntermediateSymlinkBlocked(t *testing.T) {
 	escape := t.TempDir()
-	if err := os.WriteFile(filepath.Join(escape, "secret.txt"), []byte("secret"), 0o644); err != nil {
+	data := []byte("secret")
+	err := os.WriteFile(filepath.Join(escape, "secret.txt"), data, 0o644)
+	if err != nil {
 		t.Fatalf("failed to create file: %v", err)
 	}
 	_, dirFd := testFS(t, link("escape", escape))
 	defer dirFd.Close()
 
-	_, err := stat(dirFd, "escape/secret.txt", 0)
+	_, err = stat(dirFd, "escape/secret.txt", false)
 	if err == nil {
 		t.Fatal("stat through symlink should fail")
 	}
@@ -618,7 +626,7 @@ func TestStat_DotDotRejected(t *testing.T) {
 	_, dirFd := testFS(t)
 	defer dirFd.Close()
 
-	_, err := stat(dirFd, "../etc/passwd", 0)
+	_, err := stat(dirFd, "../etc/passwd", false)
 	if err != os.ErrInvalid {
 		t.Errorf("expected os.ErrInvalid, got %v", err)
 	}
@@ -628,7 +636,7 @@ func TestStat_AbsolutePathRejected(t *testing.T) {
 	_, dirFd := testFS(t)
 	defer dirFd.Close()
 
-	_, err := stat(dirFd, "/etc/passwd", 0)
+	_, err := stat(dirFd, "/etc/passwd", false)
 	if err != os.ErrInvalid {
 		t.Errorf("expected os.ErrInvalid, got %v", err)
 	}
@@ -638,7 +646,7 @@ func TestStat_NonExistent(t *testing.T) {
 	_, dirFd := testFS(t)
 	defer dirFd.Close()
 
-	_, err := stat(dirFd, "nonexistent.txt", 0)
+	_, err := stat(dirFd, "nonexistent.txt", false)
 	if err != os.ErrNotExist {
 		t.Errorf("expected os.ErrNotExist, got %v", err)
 	}
@@ -648,7 +656,7 @@ func TestStat_SymlinkFollowEscapeBlocked(t *testing.T) {
 	_, dirFd := testFS(t, link("escape", "/etc/passwd"))
 	defer dirFd.Close()
 
-	_, err := stat(dirFd, "escape", lookupFlagsSymlinkFollow)
+	_, err := stat(dirFd, "escape", true)
 	if err == nil {
 		t.Fatal("stat with symlink follow should fail for escape symlink")
 	}
@@ -658,7 +666,7 @@ func TestStat_SymlinkChainWithDotDotEscapeBlocked(t *testing.T) {
 	_, dirFd := testFS(t, link("subdir/link", "../../etc/passwd"))
 	defer dirFd.Close()
 
-	_, err := stat(dirFd, "subdir/link", lookupFlagsSymlinkFollow)
+	_, err := stat(dirFd, "subdir/link", true)
 	if err == nil {
 		t.Fatal("stat with symlink follow should fail for .. escape")
 	}
@@ -674,7 +682,7 @@ func TestOpenat_IntermediateSymlinkAllowed(t *testing.T) {
 	)
 	defer dirFd.Close()
 
-	f, err := openat(dirFd, "link/file.txt", 0, 0, 0, uint64(RightsFdRead))
+	f, err := openat(dirFd, "link/file.txt", false, 0, 0, uint64(RightsFdRead))
 	if err != nil {
 		t.Fatalf("openat through intermediate symlink failed: %v", err)
 	}
@@ -696,7 +704,8 @@ func TestOpenat_IntermediateSymlinkWithDotDotAllowed(t *testing.T) {
 	)
 	defer dirFd.Close()
 
-	f, err := openat(dirFd, "subdir/link/file.txt", 0, 0, 0, uint64(RightsFdRead))
+	rights := uint64(RightsFdRead)
+	f, err := openat(dirFd, "subdir/link/file.txt", false, 0, 0, rights)
 	if err != nil {
 		t.Fatalf("openat through symlink with .. failed: %v", err)
 	}
@@ -718,7 +727,7 @@ func TestStat_IntermediateSymlinkAllowed(t *testing.T) {
 	)
 	defer dirFd.Close()
 
-	fs, err := stat(dirFd, "link/file.txt", 0)
+	fs, err := stat(dirFd, "link/file.txt", false)
 	if err != nil {
 		t.Fatalf("stat through intermediate symlink failed: %v", err)
 	}
@@ -756,7 +765,7 @@ func TestOpenat_ChainedIntermediateSymlinks(t *testing.T) {
 	)
 	defer dirFd.Close()
 
-	f, err := openat(dirFd, "link2/file.txt", 0, 0, 0, uint64(RightsFdRead))
+	f, err := openat(dirFd, "link2/file.txt", false, 0, 0, uint64(RightsFdRead))
 	if err != nil {
 		t.Fatalf("openat through chained symlinks failed: %v", err)
 	}
@@ -784,10 +793,12 @@ func TestOpenat_PermissionBypass_DotDot(t *testing.T) {
 	}
 	t.Cleanup(func() { os.Chmod(lockedDir, 0o700) })
 
-	// Attempt to open "locked/../target.txt".
-	// POSIX: traversing "locked" requires +x permission. Since it is 000, this should FAIL.
-	_, err := openat(dirFd, "locked/../target.txt", 0, 0, 0, uint64(RightsFdRead))
+	// Attempt to open "locked/../target.txt". Traversing "locked" requires +x
+	// permission. Since it is 000, this should fail.
+	rights := uint64(RightsFdRead)
+	f, err := openat(dirFd, "locked/../target.txt", false, 0, 0, rights)
 	if err == nil {
+		f.Close()
 		t.Fatal("openat bypassed permission check on 'locked' directory")
 	}
 }
@@ -796,22 +807,27 @@ func TestOpenat_NonExistent_DotDot(t *testing.T) {
 	_, dirFd := testFS(t, file("target.txt", "secret"))
 	defer dirFd.Close()
 
-	// Attempt to open "nonexistent/../target.txt".
-	// POSIX: Should fail because "nonexistent" does not exist.
-	_, err := openat(dirFd, "nonexistent/../target.txt", 0, 0, 0, uint64(RightsFdRead))
+	// Attempt to open "nonexistent/../target.txt". Should fail because
+	// "nonexistent" does not exist.
+	rights := uint64(RightsFdRead)
+	f, err := openat(dirFd, "nonexistent/../target.txt", false, 0, 0, rights)
 	if err == nil {
+		f.Close()
 		t.Fatal("openat bypassed existence check on 'nonexistent' directory")
 	}
 }
 
 func TestOpenat_DotDotEscapeSandboxBlocked(t *testing.T) {
 	tmpDir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(tmpDir, "outside.txt"), []byte("outside content"), 0o644); err != nil {
+	data := []byte("outside content")
+	err := os.WriteFile(filepath.Join(tmpDir, "outside.txt"), data, 0o644)
+	if err != nil {
 		t.Fatalf("failed to create outside file: %v", err)
 	}
 
 	sandboxRoot := filepath.Join(tmpDir, "sandbox")
-	if err := os.MkdirAll(filepath.Join(sandboxRoot, "subdir"), 0o755); err != nil {
+	err = os.MkdirAll(filepath.Join(sandboxRoot, "subdir"), 0o755)
+	if err != nil {
 		t.Fatalf("failed to create sandbox: %v", err)
 	}
 
@@ -821,16 +837,20 @@ func TestOpenat_DotDotEscapeSandboxBlocked(t *testing.T) {
 	}
 	defer dirFd.Close()
 
-	// Attack: "subdir/../../outside.txt" should fail (escapes sandbox)
-	_, err = openat(dirFd, "subdir/../../outside.txt", 0, 0, 0, uint64(RightsFdRead))
+	// "subdir/../../outside.txt" should fail (escapes sandbox)
+	rights := uint64(RightsFdRead)
+	f, err := openat(dirFd, "subdir/../../outside.txt", false, 0, 0, rights)
 	if err == nil {
+		f.Close()
 		t.Fatal("openat allowed sandbox escape via subdir/../..")
 	}
 }
 
 func TestOpenat_TrailingDotDotBlocked(t *testing.T) {
 	tmpDir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(tmpDir, "outside.txt"), []byte("outside"), 0o644); err != nil {
+	data := []byte("outside")
+	err := os.WriteFile(filepath.Join(tmpDir, "outside.txt"), data, 0o644)
+	if err != nil {
 		t.Fatalf("failed to create outside file: %v", err)
 	}
 
@@ -846,7 +866,7 @@ func TestOpenat_TrailingDotDotBlocked(t *testing.T) {
 	defer dirFd.Close()
 
 	// Attack: "./.." - trailing .. should fail
-	_, err = openat(dirFd, "./..", 0, 0, 0, uint64(RightsFdRead))
+	_, err = openat(dirFd, "./..", false, 0, 0, uint64(RightsFdRead))
 	if err == nil {
 		t.Fatal("openat allowed escape via ./..")
 	}
@@ -854,12 +874,15 @@ func TestOpenat_TrailingDotDotBlocked(t *testing.T) {
 
 func TestOpenat_SubdirTrailingDotDotBlocked(t *testing.T) {
 	tmpDir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(tmpDir, "outside.txt"), []byte("outside"), 0o644); err != nil {
+	data := []byte("outside")
+	err := os.WriteFile(filepath.Join(tmpDir, "outside.txt"), data, 0o644)
+	if err != nil {
 		t.Fatalf("failed to create outside file: %v", err)
 	}
 
 	sandboxRoot := filepath.Join(tmpDir, "sandbox")
-	if err := os.MkdirAll(filepath.Join(sandboxRoot, "subdir"), 0o755); err != nil {
+	err = os.MkdirAll(filepath.Join(sandboxRoot, "subdir"), 0o755)
+	if err != nil {
 		t.Fatalf("failed to create sandbox: %v", err)
 	}
 
@@ -869,8 +892,8 @@ func TestOpenat_SubdirTrailingDotDotBlocked(t *testing.T) {
 	}
 	defer dirFd.Close()
 
-	// Attack: "subdir/../.." - should fail (escapes sandbox)
-	_, err = openat(dirFd, "subdir/../..", 0, 0, 0, uint64(RightsFdRead))
+	// "subdir/../.." - should fail (escapes sandbox)
+	_, err = openat(dirFd, "subdir/../..", false, 0, 0, uint64(RightsFdRead))
 	if err == nil {
 		t.Fatal("openat allowed escape via subdir/../..")
 	}

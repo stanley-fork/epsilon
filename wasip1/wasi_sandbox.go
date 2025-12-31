@@ -86,18 +86,18 @@ func mkdirat(dir *os.File, path string, mode uint32) error {
 // Parameters:
 //   - dir: the directory os.File to stat relative to
 //   - path: the relative path of the file or directory to inspect
-//   - lookupFlags: flags for symlink handling (lookupFlagsSymlinkFollow)
+//   - followSymlinks: whether to follow final symlink
 //
 // Returns the filestat and an error if the operation fails.
-func stat(dir *os.File, path string, lookupFlags int32) (filestat, error) {
-	return statInternal(dir, path, lookupFlags, 0)
+func stat(dir *os.File, path string, followSymlinks bool) (filestat, error) {
+	return statInternal(dir, path, followSymlinks, 0)
 }
 
 // statInternal implements the core stat logic with symlink resolution.
 func statInternal(
 	dir *os.File,
 	path string,
-	lookupFlags int32,
+	followSymlinks bool,
 	depth int,
 ) (filestat, error) {
 	if depth >= maxSymlinkDepth {
@@ -131,7 +131,6 @@ func statInternal(
 	}
 
 	finalName := components[len(components)-1]
-	followSymlink := lookupFlags&lookupFlagsSymlinkFollow != 0
 
 	// Always stat with AT_SYMLINK_NOFOLLOW first to check if it's a symlink
 	var statBuf unix.Stat_t
@@ -141,7 +140,7 @@ func statInternal(
 	}
 
 	// If it's not a symlink, or we don't want to follow, return immediately
-	if statBuf.Mode&unix.S_IFMT != unix.S_IFLNK || !followSymlink {
+	if statBuf.Mode&unix.S_IFMT != unix.S_IFLNK || !followSymlinks {
 		return statFromUnix(&statBuf), nil
 	}
 
@@ -165,7 +164,7 @@ func statInternal(
 	}
 
 	// Recursively stat from the root with the resolved path.
-	return statInternal(dir, resolvedPath, lookupFlags, depth+1)
+	return statInternal(dir, resolvedPath, followSymlinks, depth+1)
 }
 
 // statFromUnix converts a unix.Stat_t to a filestat.
@@ -208,7 +207,7 @@ func fileTypeFromMode(mode uint32) int8 {
 // Parameters:
 //   - dir: the directory os.File to open relative to
 //   - path: the relative path of the file or directory to open
-//   - lookupFlags: flags for symlink handling (lookupFlagsSymlinkFollow)
+//   - followSymlinks: whether to follow final symlink
 //   - oflags: flags determining the method by which to open the file
 //   - fsRightsBase: base rights for operations using the returned os.File
 //   - fdflags: file descriptor flags
@@ -220,7 +219,8 @@ func fileTypeFromMode(mode uint32) int8 {
 func openat(
 	dir *os.File,
 	path string,
-	lookupFlags, oflags, fdflags int32,
+	followSymlinks bool,
+	oflags, fdflags int32,
 	fsRights uint64,
 ) (*os.File, error) {
 	root := dir
@@ -231,7 +231,7 @@ func openat(
 		currentDir,
 		virtualPath,
 		path,
-		lookupFlags,
+		followSymlinks,
 		oflags,
 		fdflags,
 		fsRights,
@@ -249,7 +249,8 @@ func openat(
 func pathOpenInternal(
 	root, currentDir *os.File,
 	virtualPath, path string,
-	lookupFlags, oflags, fdflags int32,
+	followSymlinks bool,
+	oflags, fdflags int32,
 	fsRights uint64,
 	depth int,
 ) (*os.File, error) {
@@ -273,8 +274,6 @@ func pathOpenInternal(
 		return nil, os.ErrInvalid
 	}
 
-	followFinalSymlink := lookupFlags&lookupFlagsSymlinkFollow != 0
-
 	// Handle special case of opening "." (the directory itself)
 	if len(components) == 1 && components[0] == "." {
 		return openFinalSecure(
@@ -282,7 +281,7 @@ func pathOpenInternal(
 			currentDir,
 			virtualPath,
 			".",
-			followFinalSymlink,
+			followSymlinks,
 			oflags,
 			fdflags,
 			fsRights,
@@ -310,7 +309,7 @@ func pathOpenInternal(
 		parentDir,
 		parentPath,
 		components[len(components)-1],
-		followFinalSymlink,
+		followSymlinks,
 		oflags,
 		fdflags,
 		fsRights,
@@ -371,7 +370,7 @@ func openFinalSecure(
 		root,
 		"",
 		resolvedPath,
-		lookupFlagsSymlinkFollow,
+		true, // followSymlinks
 		oflags,
 		fdflags,
 		fsRights,
