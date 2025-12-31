@@ -107,40 +107,6 @@ func stat(dir *os.File, path string, followSymlinks bool) (filestat, error) {
 	return statFromUnix(&statBuf), nil
 }
 
-// statFromUnix converts a unix.Stat_t to a filestat.
-func statFromUnix(s *unix.Stat_t) filestat {
-	return filestat{
-		dev:      uint64(s.Dev),
-		ino:      s.Ino,
-		filetype: fileTypeFromMode(uint32(s.Mode)),
-		nlink:    uint64(s.Nlink),
-		size:     uint64(s.Size),
-		atim:     uint64(unix.TimespecToNsec(s.Atim)),
-		mtim:     uint64(unix.TimespecToNsec(s.Mtim)),
-		ctim:     uint64(unix.TimespecToNsec(s.Ctim)),
-	}
-}
-
-// fileTypeFromMode extracts the WASI file type from a Unix mode.
-func fileTypeFromMode(mode uint32) int8 {
-	switch mode & unix.S_IFMT {
-	case unix.S_IFBLK:
-		return int8(fileTypeBlockDevice)
-	case unix.S_IFCHR:
-		return int8(fileTypeCharacterDevice)
-	case unix.S_IFDIR:
-		return int8(fileTypeDirectory)
-	case unix.S_IFREG:
-		return int8(fileTypeRegularFile)
-	case unix.S_IFSOCK:
-		return int8(fileTypeSocketStream)
-	case unix.S_IFLNK:
-		return int8(fileTypeSymbolicLink)
-	default:
-		return int8(fileTypeUnknown)
-	}
-}
-
 // utimes sets the access and modification times of a file or directory.
 // This is similar to utimensat in POSIX.
 //
@@ -176,25 +142,6 @@ func utimes(
 	return nil
 }
 
-func buildTimespec(atim, mtim int64, fstFlags int32) []unix.Timespec {
-	now := time.Now().UnixNano()
-
-	var atimSpec, mtimSpec unix.Timespec
-	if fstFlags&fstFlagsAtimNow != 0 {
-		atimSpec = unix.NsecToTimespec(now)
-	} else if fstFlags&fstFlagsAtim != 0 {
-		atimSpec = unix.NsecToTimespec(atim)
-	}
-
-	if fstFlags&fstFlagsMtimNow != 0 {
-		mtimSpec = unix.NsecToTimespec(now)
-	} else if fstFlags&fstFlagsMtim != 0 {
-		mtimSpec = unix.NsecToTimespec(mtim)
-	}
-
-	return []unix.Timespec{atimSpec, mtimSpec}
-}
-
 // openat opens a file or directory relative to a directory.
 // This is similar to openat in POSIX.
 //
@@ -223,7 +170,7 @@ func openat(
 		oflags |= int32(oFlagsDirectory)
 	}
 
-	dirFd, fileName, err := resolvePath(dir, path, followSymlinks, 0)
+	dirFd, name, err := resolvePath(dir, path, followSymlinks, 0)
 	if err != nil {
 		return nil, err
 	}
@@ -235,39 +182,11 @@ func openat(
 		defer parentDir.Close()
 	}
 
-	return openFinal(parentDir, fileName, oflags, fdflags, fsRights)
-}
-
-// readlinkat reads the target of a symlink relative to a directory fd.
-func readlinkat(dirFd int, name string) (string, error) {
-	buf := make([]byte, 256)
-	for {
-		n, err := unix.Readlinkat(dirFd, name, buf)
-		if err != nil {
-			return "", err
-		}
-		if n < len(buf) {
-			return string(buf[:n]), nil
-		}
-		// Buffer was too small, double it and retry
-		buf = make([]byte, len(buf)*2)
-	}
-}
-
-// openFinal opens the final path component with the appropriate flags.
-// This always uses O_NOFOLLOW; symlink following is handled by openFinalSecure.
-func openFinal(
-	parentDir *os.File,
-	name string,
-	oflags, fdflags int32,
-	fsRightsBase uint64,
-) (*os.File, error) {
-	flags := unix.O_CLOEXEC | unix.O_NOFOLLOW
-
 	// Determine read/write mode from rights
-	canRead := fsRightsBase&uint64(RightsFdRead) != 0
-	canWrite := fsRightsBase&uint64(RightsFdWrite) != 0
+	canRead := fsRights&uint64(RightsFdRead) != 0
+	canWrite := fsRights&uint64(RightsFdWrite) != 0
 
+	flags := unix.O_CLOEXEC | unix.O_NOFOLLOW
 	switch {
 	case canRead && canWrite:
 		flags |= unix.O_RDWR
@@ -655,4 +574,73 @@ func resolvePath(
 
 	// Restart resolution with the new target and updated depth
 	return resolvePath(dir, resolvedPath, followSymlinks, newDepth+1)
+}
+
+// readlinkat reads the target of a symlink relative to a directory fd.
+func readlinkat(dirFd int, name string) (string, error) {
+	buf := make([]byte, 256)
+	for {
+		n, err := unix.Readlinkat(dirFd, name, buf)
+		if err != nil {
+			return "", err
+		}
+		if n < len(buf) {
+			return string(buf[:n]), nil
+		}
+		// Buffer was too small, double it and retry
+		buf = make([]byte, len(buf)*2)
+	}
+}
+
+// statFromUnix converts a unix.Stat_t to a filestat.
+func statFromUnix(s *unix.Stat_t) filestat {
+	return filestat{
+		dev:      uint64(s.Dev),
+		ino:      s.Ino,
+		filetype: fileTypeFromMode(uint32(s.Mode)),
+		nlink:    uint64(s.Nlink),
+		size:     uint64(s.Size),
+		atim:     uint64(unix.TimespecToNsec(s.Atim)),
+		mtim:     uint64(unix.TimespecToNsec(s.Mtim)),
+		ctim:     uint64(unix.TimespecToNsec(s.Ctim)),
+	}
+}
+
+// fileTypeFromMode extracts the WASI file type from a Unix mode.
+func fileTypeFromMode(mode uint32) int8 {
+	switch mode & unix.S_IFMT {
+	case unix.S_IFBLK:
+		return int8(fileTypeBlockDevice)
+	case unix.S_IFCHR:
+		return int8(fileTypeCharacterDevice)
+	case unix.S_IFDIR:
+		return int8(fileTypeDirectory)
+	case unix.S_IFREG:
+		return int8(fileTypeRegularFile)
+	case unix.S_IFSOCK:
+		return int8(fileTypeSocketStream)
+	case unix.S_IFLNK:
+		return int8(fileTypeSymbolicLink)
+	default:
+		return int8(fileTypeUnknown)
+	}
+}
+
+func buildTimespec(atim, mtim int64, fstFlags int32) []unix.Timespec {
+	now := time.Now().UnixNano()
+
+	var atimSpec, mtimSpec unix.Timespec
+	if fstFlags&fstFlagsAtimNow != 0 {
+		atimSpec = unix.NsecToTimespec(now)
+	} else if fstFlags&fstFlagsAtim != 0 {
+		atimSpec = unix.NsecToTimespec(atim)
+	}
+
+	if fstFlags&fstFlagsMtimNow != 0 {
+		mtimSpec = unix.NsecToTimespec(now)
+	} else if fstFlags&fstFlagsMtim != 0 {
+		mtimSpec = unix.NsecToTimespec(mtim)
+	}
+
+	return []unix.Timespec{atimSpec, mtimSpec}
 }
