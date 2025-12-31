@@ -54,20 +54,13 @@ func mkdirat(dir *os.File, path string, mode uint32) error {
 		return os.ErrInvalid
 	}
 
-	components := splitPath(path)
-	if len(components) == 0 {
-		return os.ErrInvalid
+	components, err := getComponents(path)
+	if err != nil {
+		return err
 	}
 
 	if len(components) == 1 && components[0] == "." {
 		return os.ErrInvalid
-	}
-
-	// If the final component is "..", append "." to ensure it's processed as an
-	// intermediate component through safe logical resolution, and we use "." as
-	// the final name for the syscall.
-	if components[len(components)-1] == ".." {
-		components = append(components, ".")
 	}
 
 	parentFd, _, err := walkToParent(dir, "", components)
@@ -115,9 +108,9 @@ func statInternal(
 		return filestat{}, os.ErrInvalid
 	}
 
-	components := splitPath(path)
-	if len(components) == 0 {
-		return filestat{}, os.ErrInvalid
+	components, err := getComponents(path)
+	if err != nil {
+		return filestat{}, err
 	}
 
 	// Handle special case of stat on "." (the directory itself)
@@ -127,13 +120,6 @@ func statInternal(
 			return filestat{}, mapErrno(err)
 		}
 		return statFromUnix(&statBuf), nil
-	}
-
-	// If the final component is "..", append "." to ensure it's processed as an
-	// intermediate component through safe logical resolution, and we use "." as
-	// the final name for the syscall.
-	if components[len(components)-1] == ".." {
-		components = append(components, ".")
 	}
 
 	parentFd, parentPath, err := walkToParent(dir, "", components)
@@ -277,9 +263,9 @@ func pathOpenInternal(
 		oflags |= int32(oFlagsDirectory)
 	}
 
-	components := splitPath(path)
-	if len(components) == 0 {
-		return nil, os.ErrInvalid
+	components, err := getComponents(path)
+	if err != nil {
+		return nil, err
 	}
 
 	// Handle special case of opening "." (the directory itself)
@@ -295,13 +281,6 @@ func pathOpenInternal(
 			fsRights,
 			depth,
 		)
-	}
-
-	// If the final component is "..", append "." to ensure it's processed as an
-	// intermediate component through safe logical resolution, and we use "." as
-	// the final name for the syscall.
-	if components[len(components)-1] == ".." {
-		components = append(components, ".")
 	}
 
 	parentFd, parentPath, err := walkToParent(root, "", components)
@@ -626,6 +605,22 @@ func walkToParentInternal(
 	}
 
 	return currentDirFd, parentPath, nil
+}
+
+func getComponents(path string) ([]string, error) {
+	components := splitPath(path)
+	if len(components) == 0 {
+		return nil, os.ErrInvalid
+	}
+
+	// If the final component is "..", append "." to ensure it's processed as an
+	// intermediate component through safe logical resolution, and we use "." as
+	// the final name for the syscall.
+	if components[len(components)-1] == ".." {
+		components = append(components, ".")
+	}
+
+	return components, nil
 }
 
 // splitPath splits a path into its components without lexically resolving "..".
