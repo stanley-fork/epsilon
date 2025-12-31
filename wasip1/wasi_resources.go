@@ -28,6 +28,9 @@ import (
 
 var errMaxFileDescriptorsReached = errors.New("max file descriptors reached")
 
+const connectedSocketDefaultRights = RightsFdRead | RightsFdWrite |
+	RightsPollFdReadwrite | RightsFdFilestatGet | RightsSockShutdown
+
 const maxFileDescriptors = 2048
 
 type wasiFileDescriptor struct {
@@ -224,7 +227,18 @@ func (w *wasiResourceTable) getStat(
 }
 
 func (w *wasiResourceTable) setStatFlags(fdIndex, fdFlags int32) int32 {
-	panic("not implemented")
+	fd, errCode := w.getFileOrDir(fdIndex, RightsFdFdstatSetFlags)
+	if errCode != errnoSuccess {
+		return errCode
+	}
+
+	fd.flags = uint16(fdFlags)
+
+	if err := setFdFlags(fd.file, fdFlags); err != nil {
+		return mapError(err)
+	}
+
+	return errnoSuccess
 }
 
 func (w *wasiResourceTable) setStatRights(
@@ -253,7 +267,21 @@ func (w *wasiResourceTable) getFileStat(
 	memory *epsilon.Memory,
 	fdIndex, bufPtr int32,
 ) int32 {
-	panic("not implemented")
+	fd, ok := w.fds[fdIndex]
+	if !ok {
+		return errnoBadF
+	}
+
+	fs, err := fdstat(fd.file)
+	if err != nil {
+		return mapError(err)
+	}
+
+	buf := fs.bytes()
+	if err := memory.Set(0, uint32(bufPtr), buf[:]); err != nil {
+		return errnoFault
+	}
+	return errnoSuccess
 }
 
 func (w *wasiResourceTable) setFileStatSize(fdIndex int32, size int64) int32 {
@@ -273,7 +301,15 @@ func (w *wasiResourceTable) setFileStatTimes(
 	atim, mtim int64,
 	fstFlags int32,
 ) int32 {
-	panic("not implemented")
+	fd, ok := w.fds[fdIndex]
+	if !ok {
+		return errnoBadF
+	}
+
+	if err := utimesNanoAt(fd.file, atim, mtim, fstFlags); err != nil {
+		return mapError(err)
+	}
+	return errnoSuccess
 }
 
 func (w *wasiResourceTable) pread(
@@ -348,7 +384,19 @@ func (w *wasiResourceTable) pwrite(
 	offset int64,
 	nPtr int32,
 ) int32 {
-	panic("not implemented")
+	fd, errCode := w.getFile(fdIndex, RightsFdWrite)
+	if errCode != errnoSuccess {
+		return errCode
+	}
+
+	currentOffset := offset
+	writeBytes := func(data []byte) (int, error) {
+		n, err := writeAt(fd.file, data, currentOffset, fd.flags&fdFlagsAppend != 0)
+		currentOffset += int64(n)
+		return n, err
+	}
+
+	return iterCiovec(memory, ciovecPtr, ciovecLength, nPtr, writeBytes)
 }
 
 func (w *wasiResourceTable) read(
@@ -373,7 +421,60 @@ func (w *wasiResourceTable) readdir(
 	cookie int64,
 	bufusedPtr int32,
 ) int32 {
-	panic("not implemented")
+	fd, errCode := w.getDir(fdIndex, RightsFdReaddir)
+	if errCode != errnoSuccess {
+		return errCode
+	}
+
+	// Read directory entries starting from file position
+	// We need to seek to the beginning and read all entries, then skip to cookie
+	if _, err := fd.file.Seek(0, io.SeekStart); err != nil {
+		return mapError(err)
+	}
+
+	entries, err := fd.file.ReadDir(-1)
+	if err != nil {
+		return mapError(err)
+	}
+
+	var written int32
+	for i := int64(0); i < int64(len(entries)); i++ {
+		// Skip entries before cookie
+		if i < cookie {
+			continue
+		}
+
+		entry := entries[i]
+		info, err := entry.Info()
+		if err != nil {
+			return mapError(err)
+		}
+
+		// Build the WASI directory entry
+		dirEntry := dirEntry{
+			name:     entry.Name(),
+			fileType: int8(getModeFileType(info.Mode())),
+			ino:      0, // inode not reliably available from os.DirEntry
+		}
+
+		// Next cookie is (i + 1)
+		entryBytes := dirEntry.bytes(uint64(i + 1))
+
+		// Check if there's room for this entry
+		if written+int32(len(entryBytes)) > bufLen {
+			break
+		}
+
+		if err := memory.Set(0, uint32(bufPtr+written), entryBytes); err != nil {
+			return errnoFault
+		}
+		written += int32(len(entryBytes))
+	}
+
+	if err := memory.StoreUint32(0, uint32(bufusedPtr), uint32(written)); err != nil {
+		return errnoFault
+	}
+	return errnoSuccess
 }
 
 func (w *wasiResourceTable) renumber(fdIndex, toFdIndex int32) int32 {
@@ -481,14 +582,47 @@ func (w *wasiResourceTable) pathCreateDirectory(
 	memory *epsilon.Memory,
 	fdIndex, pathPtr, pathLen int32,
 ) int32 {
-	panic("not implemented")
+	fd, errCode := w.getDir(fdIndex, RightsPathCreateDirectory)
+	if errCode != errnoSuccess {
+		return errCode
+	}
+
+	path, err := w.readString(memory, pathPtr, pathLen)
+	if err != nil {
+		return errnoFault
+	}
+
+	if err := mkdirat(fd.file, path, 0o755); err != nil {
+		return mapError(err)
+	}
+	return errnoSuccess
 }
 
 func (w *wasiResourceTable) pathFilestatGet(
 	memory *epsilon.Memory,
 	fdIndex, flags, pathPtr, pathLen, filestatPtr int32,
 ) int32 {
-	panic("not implemented")
+	fd, errCode := w.getDir(fdIndex, RightsPathFilestatGet)
+	if errCode != errnoSuccess {
+		return errCode
+	}
+
+	path, err := w.readString(memory, pathPtr, pathLen)
+	if err != nil {
+		return errnoFault
+	}
+
+	followSymlinks := flags&lookupFlagsSymlinkFollow != 0
+	fs, err := stat(fd.file, path, followSymlinks)
+	if err != nil {
+		return mapError(err)
+	}
+
+	buf := fs.bytes()
+	if err := memory.Set(0, uint32(filestatPtr), buf[:]); err != nil {
+		return errnoFault
+	}
+	return errnoSuccess
 }
 
 func (w *wasiResourceTable) pathFilestatSetTimes(
@@ -497,7 +631,22 @@ func (w *wasiResourceTable) pathFilestatSetTimes(
 	atim, mtim int64,
 	fstFlags int32,
 ) int32 {
-	panic("not implemented")
+	fd, errCode := w.getDir(fdIndex, RightsPathFilestatSetTimes)
+	if errCode != errnoSuccess {
+		return errCode
+	}
+
+	path, err := w.readString(memory, pathPtr, pathLen)
+	if err != nil {
+		return errnoFault
+	}
+
+	followSymlinks := flags&lookupFlagsSymlinkFollow != 0
+	err = utimes(fd.file, path, atim, mtim, fstFlags, followSymlinks)
+	if err != nil {
+		return mapError(err)
+	}
+	return errnoSuccess
 }
 
 func (w *wasiResourceTable) pathLink(
@@ -505,7 +654,32 @@ func (w *wasiResourceTable) pathLink(
 	oldIndex int32,
 	oldFlags, oldPathPtr, oldPathLen, newIndex, newPathPtr, newPathLen int32,
 ) int32 {
-	panic("not implemented")
+	oldFd, errCode := w.getDir(oldIndex, RightsPathLinkSource)
+	if errCode != errnoSuccess {
+		return errCode
+	}
+
+	newFd, errCode := w.getDir(newIndex, RightsPathLinkTarget)
+	if errCode != errnoSuccess {
+		return errCode
+	}
+
+	oldPath, err := w.readString(memory, oldPathPtr, oldPathLen)
+	if err != nil {
+		return errnoFault
+	}
+
+	newPath, err := w.readString(memory, newPathPtr, newPathLen)
+	if err != nil {
+		return errnoFault
+	}
+
+	followSymlinks := oldFlags&lookupFlagsSymlinkFollow != 0
+	err = linkat(oldFd.file, oldPath, followSymlinks, newFd.file, newPath)
+	if err != nil {
+		return mapError(err)
+	}
+	return errnoSuccess
 }
 
 func (w *wasiResourceTable) pathOpen(
@@ -514,42 +688,277 @@ func (w *wasiResourceTable) pathOpen(
 	rightsBase, rightsInheriting int64,
 	fdflags, newFdPtr int32,
 ) int32 {
-	panic("not implemented")
+	fd, errCode := w.getDir(fdIndex, RightsPathOpen)
+	if errCode != errnoSuccess {
+		return errCode
+	}
+
+	// Validate rights: can only request rights that the parent fd can inherit
+	if (rightsBase & fd.rightsInheriting) != rightsBase {
+		return errnoNotCapable
+	}
+	if (rightsInheriting & fd.rightsInheriting) != rightsInheriting {
+		return errnoNotCapable
+	}
+
+	path, err := w.readString(memory, pathPtr, pathLen)
+	if err != nil {
+		return errnoFault
+	}
+
+	followSymlinks := dirflags&lookupFlagsSymlinkFollow != 0
+	rights := uint64(rightsBase)
+	file, err := openat(fd.file, path, followSymlinks, oflags, fdflags, rights)
+	if err != nil {
+		return mapError(err)
+	}
+
+	newFdIndex, errCode := w.allocateFd(
+		file,
+		rightsBase,
+		rightsInheriting,
+		uint16(fdflags),
+	)
+	if errCode != errnoSuccess {
+		return errCode
+	}
+
+	err = memory.StoreUint32(0, uint32(newFdPtr), uint32(newFdIndex))
+	if err != nil {
+		return errnoFault
+	}
+	return errnoSuccess
 }
 
 func (w *wasiResourceTable) pathReadlink(
 	memory *epsilon.Memory,
 	fdIndex, pathPtr, pathLen, bufPtr, bufLen, bufusedPtr int32,
 ) int32 {
-	panic("not implemented")
+	fd, errCode := w.getDir(fdIndex, RightsPathReadlink)
+	if errCode != errnoSuccess {
+		return errCode
+	}
+
+	path, err := w.readString(memory, pathPtr, pathLen)
+	if err != nil {
+		return errnoFault
+	}
+
+	target, err := readlink(fd.file, path)
+	if err != nil {
+		return mapError(err)
+	}
+
+	// Write as much as fits in the buffer
+	targetBytes := []byte(target)
+	if int32(len(targetBytes)) > bufLen {
+		targetBytes = targetBytes[:bufLen]
+	}
+
+	if err := memory.Set(0, uint32(bufPtr), targetBytes); err != nil {
+		return errnoFault
+	}
+	err = memory.StoreUint32(0, uint32(bufusedPtr), uint32(len(targetBytes)))
+	if err != nil {
+		return errnoFault
+	}
+	return errnoSuccess
 }
 
 func (w *wasiResourceTable) pathRemoveDirectory(
 	memory *epsilon.Memory,
 	fdIndex, pathPtr, pathLen int32,
 ) int32 {
-	panic("not implemented")
+	fd, errCode := w.getDir(fdIndex, RightsPathRemoveDirectory)
+	if errCode != errnoSuccess {
+		return errCode
+	}
+
+	path, err := w.readString(memory, pathPtr, pathLen)
+	if err != nil {
+		return errnoFault
+	}
+
+	if err := rmdirat(fd.file, path); err != nil {
+		return mapError(err)
+	}
+	return errnoSuccess
 }
 
 func (w *wasiResourceTable) pathRename(
 	memory *epsilon.Memory,
 	fdIndex, oldPathPtr, oldPathLen, newFdIndex, newPathPtr, newPathLen int32,
 ) int32 {
-	panic("not implemented")
+	oldFd, errCode := w.getDir(fdIndex, RightsPathRenameSource)
+	if errCode != errnoSuccess {
+		return errCode
+	}
+
+	newFd, errCode := w.getDir(newFdIndex, RightsPathRenameTarget)
+	if errCode != errnoSuccess {
+		return errCode
+	}
+
+	oldPath, err := w.readString(memory, oldPathPtr, oldPathLen)
+	if err != nil {
+		return errnoFault
+	}
+
+	newPath, err := w.readString(memory, newPathPtr, newPathLen)
+	if err != nil {
+		return errnoFault
+	}
+
+	if err := renameat(oldFd.file, oldPath, newFd.file, newPath); err != nil {
+		return mapError(err)
+	}
+	return errnoSuccess
 }
 
 func (w *wasiResourceTable) pathSymlink(
 	memory *epsilon.Memory,
 	targetPathPtr, targetPathLen, fdIndex, linkPathPtr, linkPathLen int32,
 ) int32 {
-	panic("not implemented")
+	fd, errCode := w.getDir(fdIndex, RightsPathSymlink)
+	if errCode != errnoSuccess {
+		return errCode
+	}
+
+	targetPath, err := w.readString(memory, targetPathPtr, targetPathLen)
+	if err != nil {
+		return errnoFault
+	}
+
+	linkPath, err := w.readString(memory, linkPathPtr, linkPathLen)
+	if err != nil {
+		return errnoFault
+	}
+
+	if err := symlinkat(targetPath, fd.file, linkPath); err != nil {
+		return mapError(err)
+	}
+	return errnoSuccess
 }
 
 func (w *wasiResourceTable) pathUnlinkFile(
 	memory *epsilon.Memory,
 	fdIndex, pathPtr, pathLen int32,
 ) int32 {
-	panic("not implemented")
+	fd, errCode := w.getDir(fdIndex, RightsPathUnlinkFile)
+	if errCode != errnoSuccess {
+		return errCode
+	}
+
+	path, err := w.readString(memory, pathPtr, pathLen)
+	if err != nil {
+		return errnoFault
+	}
+
+	if err := unlinkat(fd.file, path); err != nil {
+		return mapError(err)
+	}
+	return errnoSuccess
+}
+
+func (w *wasiResourceTable) sockAccept(
+	memory *epsilon.Memory,
+	fdIndex, flags, fdPtr int32,
+) int32 {
+	fd, errCode := w.getSocket(fdIndex)
+	if errCode != errnoSuccess {
+		return errCode
+	}
+
+	connectedSocketFd, err := accept(fd.file)
+	if err != nil {
+		if err == syscall.EAGAIN || err == syscall.EWOULDBLOCK {
+			return errnoAgain
+		}
+		return mapError(err)
+	}
+
+	newFile := os.NewFile(uintptr(connectedSocketFd), "")
+	rights := connectedSocketDefaultRights
+	newFdIndex, errCode := w.allocateFd(newFile, rights, 0, uint16(flags))
+	if errCode != errnoSuccess {
+		return errCode
+	}
+
+	err = memory.StoreUint32(0, uint32(fdPtr), uint32(newFdIndex))
+	if err != nil {
+		w.close(newFdIndex)
+		return errnoFault
+	}
+
+	return errnoSuccess
+}
+
+func (w *wasiResourceTable) sockRecv(
+	memory *epsilon.Memory,
+	fdIndex, riDataPtr, riDataLen, riFlags, roDataLenPtr, roFlagsPtr int32,
+) int32 {
+	fd, errCode := w.getSocket(fdIndex)
+	if errCode != errnoSuccess {
+		return errCode
+	}
+
+	// Note: riFlags (like MSG_PEEK) are currently ignored. To support them, we
+	// would need to switch to unix.Recvmsg or other lower level APIs directly.
+	readBytes := func(data []byte, _ int64) (int, error) {
+		return fd.file.Read(data)
+	}
+
+	errCode = iterIovec(memory, riDataPtr, riDataLen, roDataLenPtr, readBytes)
+	if errCode != errnoSuccess {
+		return errCode
+	}
+
+	// We use os.File.Read for reading from the socker, which does not return
+	// output flags (like MSG_TRUNC). For simple stream operations, returning 0 is
+	// acceptable.
+	if err := memory.StoreUint16(0, uint32(roFlagsPtr), 0); err != nil {
+		return errnoFault
+	}
+
+	return errnoSuccess
+}
+
+func (w *wasiResourceTable) sockSend(
+	memory *epsilon.Memory,
+	fdIndex, siDataPtr, siDataLen, siFlags, soDataLenPtr int32,
+) int32 {
+	fd, errCode := w.getSocket(fdIndex)
+	if errCode != errnoSuccess {
+		return errCode
+	}
+
+	// Note: siFlags (like MSG_OOB) are currently ignored. To support them, we
+	// would need to switch to unix.Sendmsg or other lower level APIs directly.
+	return iterCiovec(memory, siDataPtr, siDataLen, soDataLenPtr, fd.file.Write)
+}
+
+func (w *wasiResourceTable) sockShutdown(fdIndex, how int32) int32 {
+	fd, errCode := w.getSocket(fdIndex)
+	if errCode != errnoSuccess {
+		return errCode
+	}
+
+	var sysHow int
+	switch how {
+	case shutRd:
+		sysHow = syscall.SHUT_RD
+	case shutWr:
+		sysHow = syscall.SHUT_WR
+	case shutRdWr:
+		sysHow = syscall.SHUT_RDWR
+	default:
+		return errnoInval
+	}
+
+	if err := syscall.Shutdown(int(fd.file.Fd()), sysHow); err != nil {
+		return mapError(err)
+	}
+	return errnoSuccess
 }
 
 func (w *wasiResourceTable) allocateFdIndex() (int32, error) {
@@ -625,8 +1034,18 @@ func (w *wasiResourceTable) getFileOrDir(
 	if fd.rights&rights == 0 {
 		return nil, errnoNotCapable
 	}
-	if fd.fileType == fileTypeDirectory {
+	return fd, errnoSuccess
+}
+
+func (w *wasiResourceTable) getSocket(
+	fdIdx int32,
+) (*wasiFileDescriptor, int32) {
+	fd, ok := w.fds[fdIdx]
+	if !ok {
 		return nil, errnoBadF
+	}
+	if fd.fileType != fileTypeSocketDgram && fd.fileType != fileTypeSocketStream {
+		return nil, errnoNotSock
 	}
 	return fd, errnoSuccess
 }

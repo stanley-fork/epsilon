@@ -18,6 +18,7 @@ package wasip1
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -32,6 +33,10 @@ const maxSymlinkDepth = 40
 
 // defaultFileMode is the default permission mode for newly created files.
 const defaultFileMode = 0o600
+
+// utimeOmit is the special value for Timespec.Nsec that means "don't change".
+// This is the POSIX UTIME_OMIT value.
+const utimeOmit = (1 << 30) - 2
 
 // mkdirat creates a directory relative to a directory.
 // This is similar to mkdirat in POSIX.
@@ -99,6 +104,29 @@ func stat(dir *os.File, path string, followSymlinks bool) (filestat, error) {
 	return statFromUnix(&statBuf), nil
 }
 
+// fdstat returns a filestat from a file.
+func fdstat(file *os.File) (filestat, error) {
+	var stat unix.Stat_t
+	if err := unix.Fstat(int(file.Fd()), &stat); err != nil {
+		return filestat{}, err
+	}
+	return statFromUnix(&stat), nil
+}
+
+// setFdFlags sets flags on a file..
+func setFdFlags(file *os.File, fdFlags int32) error {
+	var osFlags int
+	if fdFlags&int32(fdFlagsAppend) != 0 {
+		osFlags |= unix.O_APPEND
+	}
+	if fdFlags&int32(fdFlagsNonblock) != 0 {
+		osFlags |= unix.O_NONBLOCK
+	}
+
+	_, err := unix.FcntlInt(file.Fd(), unix.F_SETFL, osFlags)
+	return err
+}
+
 // utimes sets the access and modification times of a file or directory.
 // This is similar to utimensat in POSIX.
 //
@@ -132,6 +160,26 @@ func utimes(
 		return err
 	}
 	return nil
+}
+
+func utimesNanoAt(file *os.File, atim, mtim int64, fstFlags int32) error {
+	times := buildTimespec(atim, mtim, fstFlags)
+	path := fmt.Sprintf("/dev/fd/%d", file.Fd())
+	return unix.UtimesNanoAt(unix.AT_FDCWD, path, times, unix.AT_SYMLINK_NOFOLLOW)
+}
+
+// writeAt writes data at the specified offset. It handles the case where the
+// file was opened with O_APPEND, which normally causes os.File.WriteAt to fail.
+func writeAt(
+	file *os.File,
+	data []byte,
+	offset int64,
+	hasAppendFlag bool,
+) (int, error) {
+	if hasAppendFlag {
+		return unix.Pwrite(int(file.Fd()), data, offset)
+	}
+	return file.WriteAt(data, offset)
 }
 
 // linkat creates a hard link to an existing file.
@@ -281,6 +329,10 @@ func renameat(
 //
 // Returns an error if the operation fails.
 func symlinkat(target string, dir *os.File, path string) error {
+	if strings.HasPrefix(target, "/") {
+		return syscall.EPERM
+	}
+
 	dirFd, name, err := resolvePath(dir, path, false, 0)
 	if err != nil {
 		return err
@@ -414,6 +466,12 @@ func openat(
 	}
 
 	return os.NewFile(uintptr(fd), name), nil
+}
+
+// accept accepts a connection on the socket file descriptor.
+func accept(file *os.File) (int, error) {
+	nfd, _, err := unix.Accept(int(file.Fd()))
+	return nfd, err
 }
 
 // walkToParent walks through intermediate path components (all except the last)
@@ -779,7 +837,10 @@ func fileTypeFromMode(mode uint32) int8 {
 func buildTimespec(atim, mtim int64, fstFlags int32) []unix.Timespec {
 	now := time.Now().UnixNano()
 
-	var atimSpec, mtimSpec unix.Timespec
+	// Default to UTIME_OMIT (don't change the timestamp)
+	atimSpec := unix.Timespec{Nsec: utimeOmit}
+	mtimSpec := unix.Timespec{Nsec: utimeOmit}
+
 	if fstFlags&fstFlagsAtimNow != 0 {
 		atimSpec = unix.NsecToTimespec(now)
 	} else if fstFlags&fstFlagsAtim != 0 {

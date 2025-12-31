@@ -756,66 +756,66 @@ func (w *WasiModule) ToImports() map[string]map[string]any {
 			errCode := w.schedYield()
 			return []any{errCode}
 		}).
-		// AddHostFunc("sock_accept", func(
-		// 	inst *epsilon.ModuleInstance,
-		// 	args ...any,
-		// ) []any {
-		// 	memory, err := inst.GetMemory(WASIMemoryExportName)
-		// 	if err != nil {
-		// 		return []any{errnoFault}
-		// 	}
-		// 	errCode := w.fs.sockAccept(
-		// 		memory,
-		// 		args[0].(int32),
-		// 		args[1].(int32),
-		// 		args[2].(int32),
-		// 	)
-		// 	return []any{errCode}
-		// }).
-		// AddHostFunc("sock_recv", func(
-		// 	inst *epsilon.ModuleInstance,
-		// 	args ...any,
-		// ) []any {
-		// 	memory, err := inst.GetMemory(WASIMemoryExportName)
-		// 	if err != nil {
-		// 		return []any{errnoFault}
-		// 	}
-		// 	errCode := w.fs.sockRecv(
-		// 		memory,
-		// 		args[0].(int32),
-		// 		args[1].(int32),
-		// 		args[2].(int32),
-		// 		args[3].(int32),
-		// 		args[4].(int32),
-		// 		args[5].(int32),
-		// 	)
-		// 	return []any{errCode}
-		// }).
-		// AddHostFunc("sock_send", func(
-		// 	inst *epsilon.ModuleInstance,
-		// 	args ...any,
-		// ) []any {
-		// 	memory, err := inst.GetMemory(WASIMemoryExportName)
-		// 	if err != nil {
-		// 		return []any{errnoFault}
-		// 	}
-		// 	errCode := w.fs.sockSend(
-		// 		memory,
-		// 		args[0].(int32),
-		// 		args[1].(int32),
-		// 		args[2].(int32),
-		// 		args[3].(int32),
-		// 		args[4].(int32),
-		// 	)
-		// 	return []any{errCode}
-		// }).
-		// AddHostFunc("sock_shutdown", func(
-		// 	inst *epsilon.ModuleInstance,
-		// 	args ...any,
-		// ) []any {
-		// 	errCode := w.fs.sockShutdown(args[0].(int32), args[1].(int32))
-		// 	return []any{errCode}
-		// }).
+		AddHostFunc("sock_accept", func(
+			inst *epsilon.ModuleInstance,
+			args ...any,
+		) []any {
+			memory, err := inst.GetMemory(WASIMemoryExportName)
+			if err != nil {
+				return []any{errnoFault}
+			}
+			errCode := w.fs.sockAccept(
+				memory,
+				args[0].(int32),
+				args[1].(int32),
+				args[2].(int32),
+			)
+			return []any{errCode}
+		}).
+		AddHostFunc("sock_recv", func(
+			inst *epsilon.ModuleInstance,
+			args ...any,
+		) []any {
+			memory, err := inst.GetMemory(WASIMemoryExportName)
+			if err != nil {
+				return []any{errnoFault}
+			}
+			errCode := w.fs.sockRecv(
+				memory,
+				args[0].(int32),
+				args[1].(int32),
+				args[2].(int32),
+				args[3].(int32),
+				args[4].(int32),
+				args[5].(int32),
+			)
+			return []any{errCode}
+		}).
+		AddHostFunc("sock_send", func(
+			inst *epsilon.ModuleInstance,
+			args ...any,
+		) []any {
+			memory, err := inst.GetMemory(WASIMemoryExportName)
+			if err != nil {
+				return []any{errnoFault}
+			}
+			errCode := w.fs.sockSend(
+				memory,
+				args[0].(int32),
+				args[1].(int32),
+				args[2].(int32),
+				args[3].(int32),
+				args[4].(int32),
+			)
+			return []any{errCode}
+		}).
+		AddHostFunc("sock_shutdown", func(
+			inst *epsilon.ModuleInstance,
+			args ...any,
+		) []any {
+			errCode := w.fs.sockShutdown(args[0].(int32), args[1].(int32))
+			return []any{errCode}
+		}).
 		Build()
 }
 
