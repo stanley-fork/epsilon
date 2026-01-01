@@ -60,14 +60,9 @@ func NewWasiModule(
 }
 
 func (w *WasiModule) argsGet(
-	inst *epsilon.ModuleInstance,
+	memory *epsilon.Memory,
 	argvPtr, argvBufPtr int32,
 ) int32 {
-	memory, err := inst.GetMemory(WASIMemoryExportName)
-	if err != nil {
-		return errnoFault
-	}
-
 	bufOffset := uint32(argvBufPtr)
 	for i, arg := range w.args {
 		ptrIndex := uint32(argvPtr) + uint32(i*4)
@@ -85,14 +80,9 @@ func (w *WasiModule) argsGet(
 }
 
 func (w *WasiModule) argsSizesGet(
-	inst *epsilon.ModuleInstance,
+	memory *epsilon.Memory,
 	argcPtr, argvBufSizePtr int32,
 ) int32 {
-	memory, err := inst.GetMemory(WASIMemoryExportName)
-	if err != nil {
-		return errnoFault
-	}
-
 	argc := uint32(len(w.args))
 	if err := memory.StoreUint32(0, uint32(argcPtr), argc); err != nil {
 		return errnoFault
@@ -109,14 +99,9 @@ func (w *WasiModule) argsSizesGet(
 }
 
 func (w *WasiModule) environGet(
-	inst *epsilon.ModuleInstance,
+	memory *epsilon.Memory,
 	envPtr, envBufPtr int32,
 ) int32 {
-	memory, err := inst.GetMemory(WASIMemoryExportName)
-	if err != nil {
-		return errnoFault
-	}
-
 	bufOffset := uint32(envBufPtr)
 	ptrIndex := uint32(envPtr)
 	for key, value := range w.env {
@@ -138,14 +123,9 @@ func (w *WasiModule) environGet(
 }
 
 func (w *WasiModule) environSizesGet(
-	inst *epsilon.ModuleInstance,
+	memory *epsilon.Memory,
 	envcPtr, envBufSizePtr int32,
 ) int32 {
-	memory, err := inst.GetMemory(WASIMemoryExportName)
-	if err != nil {
-		return errnoFault
-	}
-
 	environc := uint32(len(w.env))
 	if err := memory.StoreUint32(0, uint32(envcPtr), environc); err != nil {
 		return errnoFault
@@ -163,7 +143,7 @@ func (w *WasiModule) environSizesGet(
 }
 
 func (w *WasiModule) clockResGet(
-	inst *epsilon.ModuleInstance,
+	memory *epsilon.Memory,
 	clockId, resPtr int32,
 ) int32 {
 	res, errCode := getClockResolution(uint32(clockId))
@@ -171,12 +151,7 @@ func (w *WasiModule) clockResGet(
 		return errCode
 	}
 
-	memory, err := inst.GetMemory(WASIMemoryExportName)
-	if err != nil {
-		return errnoFault
-	}
-
-	err = memory.StoreUint64(0, uint32(resPtr), res)
+	err := memory.StoreUint64(0, uint32(resPtr), res)
 	if err != nil {
 		return errnoFault
 	}
@@ -184,17 +159,12 @@ func (w *WasiModule) clockResGet(
 }
 
 func (w *WasiModule) clockTimeGet(
-	inst *epsilon.ModuleInstance,
+	memory *epsilon.Memory,
 	clockId, resPtr int32,
 ) int32 {
 	res, errCode := getTimestamp(w.monotonicClockStartNs, uint32(clockId))
 	if errCode != errnoSuccess {
 		return errCode
-	}
-
-	memory, err := inst.GetMemory(WASIMemoryExportName)
-	if err != nil {
-		return errnoFault
 	}
 
 	if err := memory.StoreUint64(0, uint32(resPtr), uint64(res)); err != nil {
@@ -204,16 +174,11 @@ func (w *WasiModule) clockTimeGet(
 }
 
 func (w *WasiModule) randomGet(
-	inst *epsilon.ModuleInstance,
+	memory *epsilon.Memory,
 	bufPtr, bufLen int32,
 ) int32 {
-	memory, err := inst.GetMemory(WASIMemoryExportName)
-	if err != nil {
-		return errnoFault
-	}
-
 	randBytes := make([]byte, bufLen)
-	_, err = rand.Read(randBytes)
+	_, err := rand.Read(randBytes)
 	if err != nil {
 		return errnoIO
 	}
@@ -233,142 +198,112 @@ func (w *WasiModule) schedYield() int32 {
 	return errnoSuccess
 }
 
+func bind(fn func([]any) int32) func(*epsilon.ModuleInstance, ...any) []any {
+	return func(_ *epsilon.ModuleInstance, args ...any) []any {
+		return []any{fn(args)}
+	}
+}
+
+func bindMem(
+	fn func(*epsilon.Memory, []any) int32,
+) func(*epsilon.ModuleInstance, ...any) []any {
+	return func(inst *epsilon.ModuleInstance, args ...any) []any {
+		memory, err := inst.GetMemory(WASIMemoryExportName)
+		if err != nil {
+			return []any{errnoFault}
+		}
+		return []any{fn(memory, args)}
+	}
+}
+
 func (w *WasiModule) ToImports() map[string]map[string]any {
 	return epsilon.NewModuleImportBuilder(WASIModuleName).
-		AddHostFunc("args_get", func(
-			inst *epsilon.ModuleInstance,
-			args ...any,
-		) []any {
-			errCode := w.argsGet(inst, args[0].(int32), args[1].(int32))
-			return []any{errCode}
-		}).
-		AddHostFunc("args_sizes_get", func(
-			inst *epsilon.ModuleInstance,
-			args ...any,
-		) []any {
-			errCode := w.argsSizesGet(inst, args[0].(int32), args[1].(int32))
-			return []any{errCode}
-		}).
-		AddHostFunc("environ_get", func(
-			inst *epsilon.ModuleInstance,
-			args ...any,
-		) []any {
-			errCode := w.environGet(inst, args[0].(int32), args[1].(int32))
-			return []any{errCode}
-		}).
-		AddHostFunc("environ_sizes_get", func(
-			inst *epsilon.ModuleInstance,
-			args ...any,
-		) []any {
-			errCode := w.environSizesGet(inst, args[0].(int32), args[1].(int32))
-			return []any{errCode}
-		}).
-		AddHostFunc("clock_res_get", func(
-			inst *epsilon.ModuleInstance,
-			args ...any,
-		) []any {
-			errCode := w.clockResGet(inst, args[0].(int32), args[1].(int32))
-			return []any{errCode}
-		}).
-		AddHostFunc("clock_time_get", func(
-			inst *epsilon.ModuleInstance,
-			args ...any,
-		) []any {
+		AddHostFunc("args_get", bindMem(func(m *epsilon.Memory, args []any) int32 {
+			return w.argsGet(m, args[0].(int32), args[1].(int32))
+		})).
+		AddHostFunc("args_sizes_get", bindMem(func(
+			m *epsilon.Memory,
+			args []any,
+		) int32 {
+			return w.argsSizesGet(m, args[0].(int32), args[1].(int32))
+		})).
+		AddHostFunc("environ_get", bindMem(func(
+			m *epsilon.Memory,
+			args []any,
+		) int32 {
+			return w.environGet(m, args[0].(int32), args[1].(int32))
+		})).
+		AddHostFunc("environ_sizes_get", bindMem(func(
+			m *epsilon.Memory,
+			args []any,
+		) int32 {
+			return w.environSizesGet(m, args[0].(int32), args[1].(int32))
+		})).
+		AddHostFunc("clock_res_get", bindMem(func(
+			m *epsilon.Memory,
+			args []any,
+		) int32 {
+			return w.clockResGet(m, args[0].(int32), args[1].(int32))
+		})).
+		AddHostFunc("clock_time_get", bindMem(func(
+			m *epsilon.Memory,
+			args []any,
+		) int32 {
 			_ = args[1].(int64) // precision is ignored
-			errCode := w.clockTimeGet(inst, args[0].(int32), args[2].(int32))
-			return []any{errCode}
-		}).
-		AddHostFunc("fd_close", func(
-			inst *epsilon.ModuleInstance,
-			args ...any,
-		) []any {
-			errCode := w.fs.close(args[0].(int32))
-			return []any{errCode}
-		}).
-		AddHostFunc("fd_fdstat_get", func(
-			inst *epsilon.ModuleInstance,
-			args ...any,
-		) []any {
-			memory, err := inst.GetMemory(WASIMemoryExportName)
-			if err != nil {
-				return []any{errnoFault}
-			}
-			errCode := w.fs.getStat(memory, args[0].(int32), args[1].(int32))
-			return []any{errCode}
-		}).
-		AddHostFunc("fd_fdstat_set_flags", func(
-			inst *epsilon.ModuleInstance,
-			args ...any,
-		) []any {
-			errCode := w.fs.setStatFlags(args[0].(int32), args[1].(int32))
-			return []any{errCode}
-		}).
-		AddHostFunc("fd_fdstat_set_rights", func(
-			inst *epsilon.ModuleInstance,
-			args ...any,
-		) []any {
-			errCode := w.fs.setStatRights(
+			return w.clockTimeGet(m, args[0].(int32), args[2].(int32))
+		})).
+		AddHostFunc("fd_close", bind(func(args []any) int32 {
+			return w.fs.close(args[0].(int32))
+		})).
+		AddHostFunc("fd_fdstat_get", bindMem(func(
+			m *epsilon.Memory,
+			args []any,
+		) int32 {
+			return w.fs.getStat(m, args[0].(int32), args[1].(int32))
+		})).
+		AddHostFunc("fd_fdstat_set_flags", bind(func(args []any) int32 {
+			return w.fs.setStatFlags(args[0].(int32), args[1].(int32))
+		})).
+		AddHostFunc("fd_fdstat_set_rights", bind(func(args []any) int32 {
+			return w.fs.setStatRights(
 				args[0].(int32),
 				args[1].(int64),
 				args[2].(int64),
 			)
-			return []any{errCode}
-		}).
-		AddHostFunc("fd_prestat_get", func(
-			inst *epsilon.ModuleInstance,
-			args ...any,
-		) []any {
-			memory, err := inst.GetMemory(WASIMemoryExportName)
-			if err != nil {
-				return []any{errnoFault}
-			}
-			errCode := w.fs.getPrestat(memory, args[0].(int32), args[1].(int32))
-			return []any{errCode}
-		}).
-		AddHostFunc("fd_prestat_dir_name", func(
-			inst *epsilon.ModuleInstance,
-			args ...any,
-		) []any {
-			memory, err := inst.GetMemory(WASIMemoryExportName)
-			if err != nil {
-				return []any{errnoFault}
-			}
-			errCode := w.fs.prestatDirName(
-				memory,
+		})).
+		AddHostFunc("fd_prestat_get", bindMem(func(
+			m *epsilon.Memory,
+			args []any,
+		) int32 {
+			return w.fs.getPrestat(m, args[0].(int32), args[1].(int32))
+		})).
+		AddHostFunc("fd_prestat_dir_name", bindMem(func(
+			m *epsilon.Memory,
+			args []any,
+		) int32 {
+			return w.fs.prestatDirName(
+				m,
 				args[0].(int32),
 				args[1].(int32),
 				args[2].(int32),
 			)
-			return []any{errCode}
-		}).
-		AddHostFunc("path_filestat_get", func(
-			inst *epsilon.ModuleInstance,
-			args ...any,
-		) []any {
-			memory, err := inst.GetMemory(WASIMemoryExportName)
-			if err != nil {
-				return []any{errnoFault}
-			}
-			errCode := w.fs.pathFilestatGet(
-				memory,
+		})).
+		AddHostFunc("path_filestat_get", bindMem(func(
+			m *epsilon.Memory,
+			args []any,
+		) int32 {
+			return w.fs.pathFilestatGet(
+				m,
 				args[0].(int32),
 				args[1].(int32),
 				args[2].(int32),
 				args[3].(int32),
 				args[4].(int32),
 			)
-			return []any{errCode}
-		}).
-		AddHostFunc("path_open", func(
-			inst *epsilon.ModuleInstance,
-			args ...any,
-		) []any {
-			memory, err := inst.GetMemory(WASIMemoryExportName)
-			if err != nil {
-				return []any{errnoFault}
-			}
-			errCode := w.fs.pathOpen(
-				memory,
+		})).
+		AddHostFunc("path_open", bindMem(func(m *epsilon.Memory, args []any) int32 {
+			return w.fs.pathOpen(
+				m,
 				args[0].(int32),
 				args[1].(int32),
 				args[2].(int32),
@@ -379,93 +314,55 @@ func (w *WasiModule) ToImports() map[string]map[string]any {
 				args[7].(int32),
 				args[8].(int32),
 			)
-			return []any{errCode}
-		}).
-		AddHostFunc("path_remove_directory", func(
-			inst *epsilon.ModuleInstance,
-			args ...any,
-		) []any {
-			memory, err := inst.GetMemory(WASIMemoryExportName)
-			if err != nil {
-				return []any{errnoFault}
-			}
-			errCode := w.fs.pathRemoveDirectory(
-				memory,
+		})).
+		AddHostFunc("path_remove_directory", bindMem(func(
+			m *epsilon.Memory,
+			args []any,
+		) int32 {
+			return w.fs.pathRemoveDirectory(
+				m,
 				args[0].(int32),
 				args[1].(int32),
 				args[2].(int32),
 			)
-			return []any{errCode}
-		}).
-		AddHostFunc("fd_seek", func(
-			inst *epsilon.ModuleInstance,
-			args ...any,
-		) []any {
-			memory, err := inst.GetMemory(WASIMemoryExportName)
-			if err != nil {
-				return []any{errnoFault}
-			}
-			errCode := w.fs.seek(
-				memory,
+		})).
+		AddHostFunc("fd_seek", bindMem(func(m *epsilon.Memory, args []any) int32 {
+			return w.fs.seek(
+				m,
 				args[0].(int32),
 				args[1].(int64),
 				args[2].(int32),
 				args[3].(int32),
 			)
-			return []any{errCode}
-		}).
-		AddHostFunc("fd_read", func(
-			inst *epsilon.ModuleInstance,
-			args ...any,
-		) []any {
-			memory, err := inst.GetMemory(WASIMemoryExportName)
-			if err != nil {
-				return []any{errnoFault}
-			}
-			errCode := w.fs.read(
-				memory,
+		})).
+		AddHostFunc("fd_read", bindMem(func(m *epsilon.Memory, args []any) int32 {
+			return w.fs.read(
+				m,
 				args[0].(int32),
 				args[1].(int32),
 				args[2].(int32),
 				args[3].(int32),
 			)
-			return []any{errCode}
-		}).
-		AddHostFunc("fd_write", func(
-			inst *epsilon.ModuleInstance,
-			args ...any,
-		) []any {
-			memory, err := inst.GetMemory(WASIMemoryExportName)
-			if err != nil {
-				return []any{errnoFault}
-			}
-			errCode := w.fs.write(
-				memory,
+		})).
+		AddHostFunc("fd_write", bindMem(func(m *epsilon.Memory, args []any) int32 {
+			return w.fs.write(
+				m,
 				args[0].(int32),
 				args[1].(int32),
 				args[2].(int32),
 				args[3].(int32),
 			)
-			return []any{errCode}
-		}).
-		AddHostFunc("fd_pwrite", func(
-			inst *epsilon.ModuleInstance,
-			args ...any,
-		) []any {
-			memory, err := inst.GetMemory(WASIMemoryExportName)
-			if err != nil {
-				return []any{errnoFault}
-			}
-			errCode := w.fs.pwrite(
-				memory,
+		})).
+		AddHostFunc("fd_pwrite", bindMem(func(m *epsilon.Memory, args []any) int32 {
+			return w.fs.pwrite(
+				m,
 				args[0].(int32),
 				args[1].(int32),
 				args[2].(int32),
 				args[3].(int64),
 				args[4].(int32),
 			)
-			return []any{errCode}
-		}).
+		})).
 		AddHostFunc("proc_exit", func(
 			inst *epsilon.ModuleInstance,
 			args ...any,
@@ -473,160 +370,99 @@ func (w *WasiModule) ToImports() map[string]map[string]any {
 			os.Exit(int(args[0].(int32)))
 			return []any{}
 		}).
-		AddHostFunc("random_get", func(
-			inst *epsilon.ModuleInstance,
-			args ...any,
-		) []any {
-			errCode := w.randomGet(inst, args[0].(int32), args[1].(int32))
-			return []any{errCode}
-		}).
-		AddHostFunc("fd_advise", func(
-			inst *epsilon.ModuleInstance,
-			args ...any,
-		) []any {
-			errCode := w.fs.advise(
+		AddHostFunc("random_get", bindMem(func(
+			m *epsilon.Memory,
+			args []any,
+		) int32 {
+			return w.randomGet(m, args[0].(int32), args[1].(int32))
+		})).
+		AddHostFunc("fd_advise", bind(func(args []any) int32 {
+			return w.fs.advise(
 				args[0].(int32),
 				args[1].(int64),
 				args[2].(int64),
 				args[3].(int32),
 			)
-			return []any{errCode}
-		}).
-		AddHostFunc("fd_allocate", func(
-			inst *epsilon.ModuleInstance,
-			args ...any,
-		) []any {
-			errCode := w.fs.allocate(
+		})).
+		AddHostFunc("fd_allocate", bind(func(args []any) int32 {
+			return w.fs.allocate(
 				args[0].(int32),
 				args[1].(int64),
 				args[2].(int64),
 			)
-			return []any{errCode}
-		}).
-		AddHostFunc("fd_datasync", func(
-			inst *epsilon.ModuleInstance,
-			args ...any,
-		) []any {
-			errCode := w.fs.dataSync(args[0].(int32))
-			return []any{errCode}
-		}).
-		AddHostFunc("fd_sync", func(
-			inst *epsilon.ModuleInstance,
-			args ...any,
-		) []any {
-			errCode := w.fs.sync(args[0].(int32))
-			return []any{errCode}
-		}).
-		AddHostFunc("fd_tell", func(
-			inst *epsilon.ModuleInstance,
-			args ...any,
-		) []any {
-			memory, err := inst.GetMemory(WASIMemoryExportName)
-			if err != nil {
-				return []any{errnoFault}
-			}
-			errCode := w.fs.tell(memory, args[0].(int32), args[1].(int32))
-			return []any{errCode}
-		}).
-		AddHostFunc("fd_renumber", func(
-			inst *epsilon.ModuleInstance,
-			args ...any,
-		) []any {
-			errCode := w.fs.renumber(args[0].(int32), args[1].(int32))
-			return []any{errCode}
-		}).
-		AddHostFunc("fd_filestat_get", func(
-			inst *epsilon.ModuleInstance,
-			args ...any,
-		) []any {
-			memory, err := inst.GetMemory(WASIMemoryExportName)
-			if err != nil {
-				return []any{errnoFault}
-			}
-			errCode := w.fs.getFileStat(memory, args[0].(int32), args[1].(int32))
-			return []any{errCode}
-		}).
-		AddHostFunc("fd_filestat_set_size", func(
-			inst *epsilon.ModuleInstance,
-			args ...any,
-		) []any {
-			errCode := w.fs.setFileStatSize(args[0].(int32), args[1].(int64))
-			return []any{errCode}
-		}).
-		AddHostFunc("fd_filestat_set_times", func(
-			inst *epsilon.ModuleInstance,
-			args ...any,
-		) []any {
-			errCode := w.fs.setFileStatTimes(
+		})).
+		AddHostFunc("fd_datasync", bind(func(args []any) int32 {
+			return w.fs.dataSync(args[0].(int32))
+		})).
+		AddHostFunc("fd_sync", bind(func(args []any) int32 {
+			return w.fs.sync(args[0].(int32))
+		})).
+		AddHostFunc("fd_tell", bindMem(func(m *epsilon.Memory, args []any) int32 {
+			return w.fs.tell(m, args[0].(int32), args[1].(int32))
+		})).
+		AddHostFunc("fd_renumber", bind(func(args []any) int32 {
+			return w.fs.renumber(args[0].(int32), args[1].(int32))
+		})).
+		AddHostFunc("fd_filestat_get", bindMem(func(
+			m *epsilon.Memory,
+			args []any,
+		) int32 {
+			return w.fs.getFileStat(m, args[0].(int32), args[1].(int32))
+		})).
+		AddHostFunc("fd_filestat_set_size", bind(func(args []any) int32 {
+			return w.fs.setFileStatSize(args[0].(int32), args[1].(int64))
+		})).
+		AddHostFunc("fd_filestat_set_times", bind(func(args []any) int32 {
+			return w.fs.setFileStatTimes(
 				args[0].(int32),
 				args[1].(int64),
 				args[2].(int64),
 				args[3].(int32),
 			)
-			return []any{errCode}
-		}).
-		AddHostFunc("fd_pread", func(
-			inst *epsilon.ModuleInstance,
-			args ...any,
-		) []any {
-			memory, err := inst.GetMemory(WASIMemoryExportName)
-			if err != nil {
-				return []any{errnoFault}
-			}
-			errCode := w.fs.pread(
-				memory,
+		})).
+		AddHostFunc("fd_pread", bindMem(func(
+			m *epsilon.Memory,
+			args []any,
+		) int32 {
+			return w.fs.pread(
+				m,
 				args[0].(int32),
 				args[1].(int32),
 				args[2].(int32),
 				args[3].(int64),
 				args[4].(int32),
 			)
-			return []any{errCode}
-		}).
-		AddHostFunc("fd_readdir", func(
-			inst *epsilon.ModuleInstance,
-			args ...any,
-		) []any {
-			memory, err := inst.GetMemory(WASIMemoryExportName)
-			if err != nil {
-				return []any{errnoFault}
-			}
-			errCode := w.fs.readdir(
-				memory,
+		})).
+		AddHostFunc("fd_readdir", bindMem(func(
+			m *epsilon.Memory,
+			args []any,
+		) int32 {
+			return w.fs.readdir(
+				m,
 				args[0].(int32),
 				args[1].(int32),
 				args[2].(int32),
 				args[3].(int64),
 				args[4].(int32),
 			)
-			return []any{errCode}
-		}).
-		AddHostFunc("path_create_directory", func(
-			inst *epsilon.ModuleInstance,
-			args ...any,
-		) []any {
-			memory, err := inst.GetMemory(WASIMemoryExportName)
-			if err != nil {
-				return []any{errnoFault}
-			}
-			errCode := w.fs.pathCreateDirectory(
-				memory,
+		})).
+		AddHostFunc("path_create_directory", bindMem(func(
+			m *epsilon.Memory,
+			args []any,
+		) int32 {
+			return w.fs.pathCreateDirectory(
+				m,
 				args[0].(int32),
 				args[1].(int32),
 				args[2].(int32),
 			)
-			return []any{errCode}
-		}).
-		AddHostFunc("path_filestat_set_times", func(
-			inst *epsilon.ModuleInstance,
-			args ...any,
-		) []any {
-			memory, err := inst.GetMemory(WASIMemoryExportName)
-			if err != nil {
-				return []any{errnoFault}
-			}
-			errCode := w.fs.pathFilestatSetTimes(
-				memory,
+		})).
+		AddHostFunc("path_filestat_set_times", bindMem(func(
+			m *epsilon.Memory,
+			args []any,
+		) int32 {
+			return w.fs.pathFilestatSetTimes(
+				m,
 				args[0].(int32),
 				args[1].(int32),
 				args[2].(int32),
@@ -635,18 +471,10 @@ func (w *WasiModule) ToImports() map[string]map[string]any {
 				args[5].(int64),
 				args[6].(int32),
 			)
-			return []any{errCode}
-		}).
-		AddHostFunc("path_link", func(
-			inst *epsilon.ModuleInstance,
-			args ...any,
-		) []any {
-			memory, err := inst.GetMemory(WASIMemoryExportName)
-			if err != nil {
-				return []any{errnoFault}
-			}
-			errCode := w.fs.pathLink(
-				memory,
+		})).
+		AddHostFunc("path_link", bindMem(func(m *epsilon.Memory, args []any) int32 {
+			return w.fs.pathLink(
+				m,
 				args[0].(int32),
 				args[1].(int32),
 				args[2].(int32),
@@ -655,18 +483,13 @@ func (w *WasiModule) ToImports() map[string]map[string]any {
 				args[5].(int32),
 				args[6].(int32),
 			)
-			return []any{errCode}
-		}).
-		AddHostFunc("path_readlink", func(
-			inst *epsilon.ModuleInstance,
-			args ...any,
-		) []any {
-			memory, err := inst.GetMemory(WASIMemoryExportName)
-			if err != nil {
-				return []any{errnoFault}
-			}
-			errCode := w.fs.pathReadlink(
-				memory,
+		})).
+		AddHostFunc("path_readlink", bindMem(func(
+			m *epsilon.Memory,
+			args []any,
+		) int32 {
+			return w.fs.pathReadlink(
+				m,
 				args[0].(int32),
 				args[1].(int32),
 				args[2].(int32),
@@ -674,18 +497,13 @@ func (w *WasiModule) ToImports() map[string]map[string]any {
 				args[4].(int32),
 				args[5].(int32),
 			)
-			return []any{errCode}
-		}).
-		AddHostFunc("path_rename", func(
-			inst *epsilon.ModuleInstance,
-			args ...any,
-		) []any {
-			memory, err := inst.GetMemory(WASIMemoryExportName)
-			if err != nil {
-				return []any{errnoFault}
-			}
-			errCode := w.fs.pathRename(
-				memory,
+		})).
+		AddHostFunc("path_rename", bindMem(func(
+			m *epsilon.Memory,
+			args []any,
+		) int32 {
+			return w.fs.pathRename(
+				m,
 				args[0].(int32),
 				args[1].(int32),
 				args[2].(int32),
@@ -693,42 +511,31 @@ func (w *WasiModule) ToImports() map[string]map[string]any {
 				args[4].(int32),
 				args[5].(int32),
 			)
-			return []any{errCode}
-		}).
-		AddHostFunc("path_symlink", func(
-			inst *epsilon.ModuleInstance,
-			args ...any,
-		) []any {
-			memory, err := inst.GetMemory(WASIMemoryExportName)
-			if err != nil {
-				return []any{errnoFault}
-			}
-			errCode := w.fs.pathSymlink(
-				memory,
+		})).
+		AddHostFunc("path_symlink", bindMem(func(
+			m *epsilon.Memory,
+			args []any,
+		) int32 {
+			return w.fs.pathSymlink(
+				m,
 				args[0].(int32),
 				args[1].(int32),
 				args[2].(int32),
 				args[3].(int32),
 				args[4].(int32),
 			)
-			return []any{errCode}
-		}).
-		AddHostFunc("path_unlink_file", func(
-			inst *epsilon.ModuleInstance,
-			args ...any,
-		) []any {
-			memory, err := inst.GetMemory(WASIMemoryExportName)
-			if err != nil {
-				return []any{errnoFault}
-			}
-			errCode := w.fs.pathUnlinkFile(
-				memory,
+		})).
+		AddHostFunc("path_unlink_file", bindMem(func(
+			m *epsilon.Memory,
+			args []any,
+		) int32 {
+			return w.fs.pathUnlinkFile(
+				m,
 				args[0].(int32),
 				args[1].(int32),
 				args[2].(int32),
 			)
-			return []any{errCode}
-		}).
+		})).
 		AddHostFunc("poll_oneoff", func(
 			inst *epsilon.ModuleInstance,
 			args ...any,
@@ -742,46 +549,26 @@ func (w *WasiModule) ToImports() map[string]map[string]any {
 			)
 			return []any{errCode}
 		}).
-		AddHostFunc("proc_raise", func(
-			inst *epsilon.ModuleInstance,
-			args ...any,
-		) []any {
-			errCode := w.procRaise(args[0].(int32))
-			return []any{errCode}
-		}).
-		AddHostFunc("sched_yield", func(
-			inst *epsilon.ModuleInstance,
-			args ...any,
-		) []any {
-			errCode := w.schedYield()
-			return []any{errCode}
-		}).
-		AddHostFunc("sock_accept", func(
-			inst *epsilon.ModuleInstance,
-			args ...any,
-		) []any {
-			memory, err := inst.GetMemory(WASIMemoryExportName)
-			if err != nil {
-				return []any{errnoFault}
-			}
-			errCode := w.fs.sockAccept(
-				memory,
+		AddHostFunc("proc_raise", bind(func(args []any) int32 {
+			return w.procRaise(args[0].(int32))
+		})).
+		AddHostFunc("sched_yield", bind(func(args []any) int32 {
+			return w.schedYield()
+		})).
+		AddHostFunc("sock_accept", bindMem(func(
+			m *epsilon.Memory,
+			args []any,
+		) int32 {
+			return w.fs.sockAccept(
+				m,
 				args[0].(int32),
 				args[1].(int32),
 				args[2].(int32),
 			)
-			return []any{errCode}
-		}).
-		AddHostFunc("sock_recv", func(
-			inst *epsilon.ModuleInstance,
-			args ...any,
-		) []any {
-			memory, err := inst.GetMemory(WASIMemoryExportName)
-			if err != nil {
-				return []any{errnoFault}
-			}
-			errCode := w.fs.sockRecv(
-				memory,
+		})).
+		AddHostFunc("sock_recv", bindMem(func(m *epsilon.Memory, args []any) int32 {
+			return w.fs.sockRecv(
+				m,
 				args[0].(int32),
 				args[1].(int32),
 				args[2].(int32),
@@ -789,33 +576,20 @@ func (w *WasiModule) ToImports() map[string]map[string]any {
 				args[4].(int32),
 				args[5].(int32),
 			)
-			return []any{errCode}
-		}).
-		AddHostFunc("sock_send", func(
-			inst *epsilon.ModuleInstance,
-			args ...any,
-		) []any {
-			memory, err := inst.GetMemory(WASIMemoryExportName)
-			if err != nil {
-				return []any{errnoFault}
-			}
-			errCode := w.fs.sockSend(
-				memory,
+		})).
+		AddHostFunc("sock_send", bindMem(func(m *epsilon.Memory, args []any) int32 {
+			return w.fs.sockSend(
+				m,
 				args[0].(int32),
 				args[1].(int32),
 				args[2].(int32),
 				args[3].(int32),
 				args[4].(int32),
 			)
-			return []any{errCode}
-		}).
-		AddHostFunc("sock_shutdown", func(
-			inst *epsilon.ModuleInstance,
-			args ...any,
-		) []any {
-			errCode := w.fs.sockShutdown(args[0].(int32), args[1].(int32))
-			return []any{errCode}
-		}).
+		})).
+		AddHostFunc("sock_shutdown", bind(func(args []any) int32 {
+			return w.fs.sockShutdown(args[0].(int32), args[1].(int32))
+		})).
 		Build()
 }
 
