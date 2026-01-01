@@ -15,6 +15,7 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -158,6 +159,10 @@ func runCLI(
 	funcName, funcArgs := args[1], args[2:]
 	results, err := parseAndInvokeFunction(instance, funcName, funcArgs)
 	if err != nil {
+		var procExitErr *wasip1.ProcExitError
+		if errors.As(err, &procExitErr) {
+			os.Exit(int(procExitErr.Code))
+		}
 		return err
 	}
 

@@ -18,7 +18,7 @@ package wasip1
 
 import (
 	"crypto/rand"
-	"os"
+	"fmt"
 	"time"
 
 	"github.com/ziggy42/epsilon/epsilon"
@@ -29,6 +29,16 @@ type WasiModule struct {
 	args                  []string
 	env                   map[string]string
 	monotonicClockStartNs int64
+}
+
+// ProcExitError is an error that signals that the process should exit with the
+// given code. It is used to implement proc_exit.
+type ProcExitError struct {
+	Code int32
+}
+
+func (e *ProcExitError) Error() string {
+	return fmt.Sprintf("proc_exit: %d", e.Code)
 }
 
 // NewWasiModule creates a new WasiModule instance.
@@ -367,8 +377,7 @@ func (w *WasiModule) ToImports() map[string]map[string]any {
 			inst *epsilon.ModuleInstance,
 			args ...any,
 		) []any {
-			os.Exit(int(args[0].(int32)))
-			return []any{}
+			panic(&ProcExitError{Code: args[0].(int32)})
 		}).
 		AddHostFunc("random_get", bindMem(func(
 			m *epsilon.Memory,
