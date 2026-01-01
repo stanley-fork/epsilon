@@ -113,6 +113,57 @@ func fdstat(file *os.File) (filestat, error) {
 	return statFromUnix(&stat), nil
 }
 
+// readDirEntries reads directory entries from a directory, returning synthetic
+// "." and ".." entries followed by actual directory content. This is required
+// by WASI fd_readdir specification.
+//
+// For each entry, the inode is obtained via Fstatat. The "." entry uses the
+// directory's own inode; ".." uses inode 0 because we cannot safely access
+// the parent directory due to sandboxing.
+func readDirEntries(dir *os.File) ([]dirEntry, error) {
+	// Get the directory's own inode for "."
+	var dirStat unix.Stat_t
+	if err := unix.Fstat(int(dir.Fd()), &dirStat); err != nil {
+		return nil, err
+	}
+
+	// Seek to start to ensure we read all entries
+	if _, err := dir.Seek(0, 0); err != nil {
+		return nil, err
+	}
+
+	// Read actual directory entries
+	entries, err := dir.ReadDir(-1)
+	if err != nil {
+		return nil, err
+	}
+
+	// Build result: . and .. first, then actual entries
+	result := make([]dirEntry, 0, len(entries)+2)
+	result = append(
+		result,
+		dirEntry{name: ".", fileType: int8(fileTypeDirectory), ino: dirStat.Ino},
+		dirEntry{name: "..", fileType: int8(fileTypeDirectory), ino: 0},
+	)
+
+	dirFd := int(dir.Fd())
+	for _, entry := range entries {
+		var statBuf unix.Stat_t
+		err := unix.Fstatat(dirFd, entry.Name(), &statBuf, unix.AT_SYMLINK_NOFOLLOW)
+		if err != nil {
+			return nil, err
+		}
+
+		result = append(result, dirEntry{
+			name:     entry.Name(),
+			fileType: fileTypeFromMode(uint32(statBuf.Mode)),
+			ino:      statBuf.Ino,
+		})
+	}
+
+	return result, nil
+}
+
 // setFdFlags sets flags on a file..
 func setFdFlags(file *os.File, fdFlags int32) error {
 	var osFlags int
@@ -146,6 +197,11 @@ func utimes(
 	fstFlags int32,
 	followSymlinks bool,
 ) error {
+	times, err := buildTimespec(atim, mtim, fstFlags)
+	if err != nil {
+		return err
+	}
+
 	dirFd, fileName, err := resolvePath(dir, path, followSymlinks, 0)
 	if err != nil {
 		return err
@@ -154,7 +210,6 @@ func utimes(
 		defer unix.Close(dirFd)
 	}
 
-	times := buildTimespec(atim, mtim, fstFlags)
 	flags := unix.AT_SYMLINK_NOFOLLOW
 	if err := unix.UtimesNanoAt(dirFd, fileName, times, flags); err != nil {
 		return err
@@ -163,7 +218,10 @@ func utimes(
 }
 
 func utimesNanoAt(file *os.File, atim, mtim int64, fstFlags int32) error {
-	times := buildTimespec(atim, mtim, fstFlags)
+	times, err := buildTimespec(atim, mtim, fstFlags)
+	if err != nil {
+		return err
+	}
 	path := fmt.Sprintf("/dev/fd/%d", file.Fd())
 	return unix.UtimesNanoAt(unix.AT_FDCWD, path, times, unix.AT_SYMLINK_NOFOLLOW)
 }
@@ -200,6 +258,13 @@ func linkat(
 	newDir *os.File,
 	newPath string,
 ) error {
+	// Hard link creation does not support directory targets (implied by trailing
+	// slash)
+	if strings.HasSuffix(oldPath, string(filepath.Separator)) ||
+		strings.HasSuffix(newPath, string(filepath.Separator)) {
+		return syscall.ENOENT
+	}
+
 	oldDirFd, oldName, err := resolvePath(oldDir, oldPath, followSymlinks, 0)
 	if err != nil {
 		return err
@@ -329,8 +394,12 @@ func renameat(
 //
 // Returns an error if the operation fails.
 func symlinkat(target string, dir *os.File, path string) error {
-	if strings.HasPrefix(target, "/") {
+	if strings.HasPrefix(target, string(filepath.Separator)) {
 		return syscall.EPERM
+	}
+
+	if strings.HasSuffix(path, string(filepath.Separator)) {
+		return syscall.ENOENT
 	}
 
 	dirFd, name, err := resolvePath(dir, path, false, 0)
@@ -358,12 +427,20 @@ func symlinkat(target string, dir *os.File, path string) error {
 //
 // Returns EISDIR if the path refers to a directory.
 func unlinkat(dir *os.File, path string) error {
+	// Preserve trailing slash for proper syscall semantics
+	hasTrailingSlash := strings.HasSuffix(path, string(filepath.Separator))
+
 	dirFd, name, err := resolvePath(dir, path, false, 0)
 	if err != nil {
 		return err
 	}
 	if dirFd != int(dir.Fd()) {
 		defer unix.Close(dirFd)
+	}
+
+	// Restore trailing slash so syscall returns correct error
+	if hasTrailingSlash {
+		name += string(filepath.Separator)
 	}
 
 	err = unix.Unlinkat(dirFd, name, 0)
@@ -522,7 +599,7 @@ func walkToParent(
 				if currentDirFd != dirFd {
 					unix.Close(currentDirFd)
 				}
-				return 0, "", depth, os.ErrPermission
+				return 0, "", depth, syscall.EPERM
 			}
 
 			// Close current fd before restarting
@@ -690,7 +767,7 @@ func resolveSymlinkTarget(parentPath, target string) (string, error) {
 		resolved = filepath.Clean(filepath.Join(parentPath, target))
 	}
 	if !filepath.IsLocal(resolved) {
-		return "", os.ErrPermission
+		return "", syscall.EPERM
 	}
 	return resolved, nil
 }
@@ -834,7 +911,13 @@ func fileTypeFromMode(mode uint32) int8 {
 	}
 }
 
-func buildTimespec(atim, mtim int64, fstFlags int32) []unix.Timespec {
+func buildTimespec(atim, mtim int64, fstFlags int32) ([]unix.Timespec, error) {
+	// ATIM and ATIM_NOW are mutually exclusive, as are MTIM and MTIM_NOW
+	if (fstFlags&fstFlagsAtim != 0 && fstFlags&fstFlagsAtimNow != 0) ||
+		(fstFlags&fstFlagsMtim != 0 && fstFlags&fstFlagsMtimNow != 0) {
+		return nil, syscall.EINVAL
+	}
+
 	now := time.Now().UnixNano()
 
 	// Default to UTIME_OMIT (don't change the timestamp)
@@ -853,5 +936,5 @@ func buildTimespec(atim, mtim int64, fstFlags int32) []unix.Timespec {
 		mtimSpec = unix.NsecToTimespec(mtim)
 	}
 
-	return []unix.Timespec{atimSpec, mtimSpec}
+	return []unix.Timespec{atimSpec, mtimSpec}, nil
 }

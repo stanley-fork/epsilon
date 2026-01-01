@@ -426,13 +426,12 @@ func (w *wasiResourceTable) readdir(
 		return errCode
 	}
 
-	// Read directory entries starting from file position
-	// We need to seek to the beginning and read all entries, then skip to cookie
+	// Seek to beginning before reading directory entries
 	if _, err := fd.file.Seek(0, io.SeekStart); err != nil {
 		return mapError(err)
 	}
 
-	entries, err := fd.file.ReadDir(-1)
+	entries, err := readDirEntries(fd.file)
 	if err != nil {
 		return mapError(err)
 	}
@@ -444,21 +443,8 @@ func (w *wasiResourceTable) readdir(
 			continue
 		}
 
-		entry := entries[i]
-		info, err := entry.Info()
-		if err != nil {
-			return mapError(err)
-		}
-
-		// Build the WASI directory entry
-		dirEntry := dirEntry{
-			name:     entry.Name(),
-			fileType: int8(getModeFileType(info.Mode())),
-			ino:      0, // inode not reliably available from os.DirEntry
-		}
-
 		// Next cookie is (i + 1)
-		entryBytes := dirEntry.bytes(uint64(i + 1))
+		entryBytes := entries[i].bytes(uint64(i + 1))
 
 		// Check if there's room for this entry
 		if written+int32(len(entryBytes)) > bufLen {
@@ -471,7 +457,8 @@ func (w *wasiResourceTable) readdir(
 		written += int32(len(entryBytes))
 	}
 
-	if err := memory.StoreUint32(0, uint32(bufusedPtr), uint32(written)); err != nil {
+	err = memory.StoreUint32(0, uint32(bufusedPtr), uint32(written))
+	if err != nil {
 		return errnoFault
 	}
 	return errnoSuccess

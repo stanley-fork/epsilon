@@ -673,8 +673,8 @@ func TestStat_SymlinkChainWithDotDotEscapeBlocked(t *testing.T) {
 	if err == nil {
 		t.Fatal("stat with symlink follow should fail for .. escape")
 	}
-	if err != os.ErrPermission {
-		t.Errorf("expected os.ErrPermission, got %v", err)
+	if !errors.Is(err, syscall.EPERM) {
+		t.Errorf("expected syscall.EPERM, got %v", err)
 	}
 }
 
