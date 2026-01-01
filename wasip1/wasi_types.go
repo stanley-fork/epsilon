@@ -16,8 +16,19 @@ package wasip1
 
 import (
 	"encoding/binary"
+	"fmt"
 	"os"
 )
+
+// ProcExitError is an error that signals that the process should exit with the
+// given code. It is used to implement proc_exit.
+type ProcExitError struct {
+	Code int32
+}
+
+func (e *ProcExitError) Error() string {
+	return fmt.Sprintf("proc_exit: %d", e.Code)
+}
 
 const (
 	WASIMemoryExportName = "memory"
