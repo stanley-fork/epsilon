@@ -486,11 +486,12 @@ func openat(
 	if err != nil {
 		return nil, err
 	}
-	parentDir := os.NewFile(uintptr(dirFd), "")
 
+	var parentDir *os.File
 	if dirFd == int(dir.Fd()) {
 		parentDir = dir
 	} else {
+		parentDir = os.NewFile(uintptr(dirFd), "")
 		defer parentDir.Close()
 	}
 
