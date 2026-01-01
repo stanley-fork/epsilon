@@ -301,9 +301,9 @@ func (w *wasiResourceTable) setFileStatTimes(
 	atim, mtim int64,
 	fstFlags int32,
 ) int32 {
-	fd, ok := w.fds[fdIndex]
-	if !ok {
-		return errnoBadF
+	fd, errCode := w.getFileOrDir(fdIndex, RightsFdFilestatSetTimes)
+	if errCode != errnoSuccess {
+		return errCode
 	}
 
 	if err := utimesNanoAt(fd.file, atim, mtim, fstFlags); err != nil {

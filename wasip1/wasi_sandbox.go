@@ -222,8 +222,10 @@ func utimesNanoAt(file *os.File, atim, mtim int64, fstFlags int32) error {
 	if err != nil {
 		return err
 	}
+	// Uses /dev/fd/N to reference the open file descriptor, avoiding TOCTOU races
+	// while maintaining nanosecond precision.
 	path := fmt.Sprintf("/dev/fd/%d", file.Fd())
-	return unix.UtimesNanoAt(unix.AT_FDCWD, path, times, unix.AT_SYMLINK_NOFOLLOW)
+	return unix.UtimesNanoAt(unix.AT_FDCWD, path, times, 0)
 }
 
 // writeAt writes data at the specified offset. It handles the case where the
