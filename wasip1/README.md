@@ -70,7 +70,8 @@ func main() {
 
 ## Limitations
 
-All 45 WASI Preview 1 functions are implemented, but the following have limitations:
+All 45 WASI Preview 1 functions are implemented, but the following have
+limitations:
 
 ### Clocks
 
@@ -79,14 +80,15 @@ All 45 WASI Preview 1 functions are implemented, but the following have limitati
 
 ### Signals
 
-- **`proc_raise`**: Always returns `ERRNO_NOTSUP`. Signal handling is not implemented.
+- **`proc_raise`**: Always returns `ERRNO_NOTSUP`. Signal handling is not 
+	implemented.
 
 ### Sockets
 
 Socket operations work with pre-opened socket file descriptors but have the 
 following limitations:
 
-- **No socket creation**: There is no way to create new sockets from within WASM.
+- **No socket creation**: There is no way to create new sockets from WASM.
   The host must pre-open a listening socket and pass it to the WASM module.
 - **`sock_recv`**: The `ri_flags` parameter (e.g., `MSG_PEEK`, `MSG_WAITALL`) is 
   ignored. Receive always uses standard blocking read semantics.
@@ -94,7 +96,7 @@ following limitations:
 
 ### Polling
 
-- **`poll_oneoff`**: Does not use true async I/O polling (`select`/`poll`/`epoll`).
-  Regular files and directories are always reported as ready. Clock subscriptions 
-  use `time.Sleep`. Hangup detection (`FD_READWRITE_HANGUP`) for sockets is not 
-  implemented.
+- **`poll_oneoff`**: Does not use true async I/O polling 
+  (`select`/`poll`/`epoll`). Regular files and directories are always reported 
+	as ready. Clock subscriptions use `time.Sleep`. Hangup detection 
+	(`FD_READWRITE_HANGUP`) for sockets is not implemented.
