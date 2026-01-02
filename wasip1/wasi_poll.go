@@ -115,6 +115,83 @@ func writeEvent(memory *epsilon.Memory, offset uint32, event event) error {
 
 const maxSubscriptions = 4096
 
+// handleClockSubscription processes a clock subscription and returns the
+// timeout duration and an event. If the clock ID is invalid, it returns an
+// error event.
+func (w *WasiModule) handleClockSubscription(
+	sub subscription,
+) (time.Duration, event) {
+	clockSub := parseSubscriptionClock(sub.body)
+	isAbsoluteTime := clockSub.flags&subclockFlagsSubscriptionClockAbstime != 0
+
+	var timeout int64
+	if isAbsoluteTime {
+		now, errCode := getTimestamp(w.monotonicClockStartNs, clockSub.clockId)
+		if errCode != errnoSuccess {
+			return 0, event{
+				userData:  sub.userData,
+				errorCode: int16(errnoInval),
+				eventType: eventTypeClock,
+			}
+		}
+		timeout = max(int64(clockSub.timeout)-now, 0)
+	} else {
+		timeout = int64(clockSub.timeout)
+	}
+
+	event := event{
+		userData:  sub.userData,
+		errorCode: int16(errnoSuccess),
+		eventType: eventTypeClock,
+	}
+	return time.Duration(timeout), event
+}
+
+// handleFdSubscription processes an FD read/write subscription and returns an
+// event if the FD is ready, or nil if it's not ready yet.
+func (w *WasiModule) handleFdSubscription(sub subscription) *event {
+	fdSub := parseSubscriptionFdReadwrite(sub.body)
+
+	fd, errCode := w.fs.getFileOrDir(int32(fdSub.fd), RightsPollFdReadwrite)
+	if errCode != errnoSuccess {
+		return &event{
+			userData:  sub.userData,
+			errorCode: int16(errCode),
+			eventType: sub.subscriptionType,
+		}
+	}
+
+	switch fdSub.fd {
+	case 0: // stdin is readable but not writable
+		if sub.subscriptionType != eventTypeFdRead {
+			return nil
+		}
+	case 1, 2: // stdout/stderr are writable but not readable
+		if sub.subscriptionType != eventTypeFdWrite {
+			return nil
+		}
+	}
+
+	var nbytes uint64
+	if fd.fileType == fileTypeRegularFile {
+		if info, err := fd.file.Stat(); err == nil {
+			nbytes = uint64(info.Size())
+		}
+	}
+
+	return &event{
+		userData:  sub.userData,
+		errorCode: int16(errnoSuccess),
+		eventType: sub.subscriptionType,
+		fdReadWrite: eventFdReadwrite{
+			nBytes: nbytes,
+			// TODO: Implement proper hangup detection using syscall.Select or
+			// unix.Poll to set eventRwFlagsFdReadwriteHangup when appropriate.
+			flags: 0,
+		},
+	}
+}
+
 func (w *WasiModule) pollOneoff(
 	memory *epsilon.Memory,
 	inPtr, outPtr, nsubscriptions, neventsPtr int32,
@@ -133,107 +210,25 @@ func (w *WasiModule) pollOneoff(
 		subscriptions[i] = sub
 	}
 
-	// Process subscriptions and generate events
 	events := make([]event, 0, nsubscriptions)
 	var sleepDuration time.Duration
-	var clockEvents []event // Store clock events separately
+	var clockEvents []event
 
 	for _, sub := range subscriptions {
 		switch sub.subscriptionType {
 		case eventTypeClock:
-			// Parse clock subscription
-			clockSub := parseSubscriptionClock(sub.body)
-
-			// Calculate timeout
-			var timeout int64
-			if clockSub.flags&subclockFlagsSubscriptionClockAbstime != 0 {
-				// Absolute time
-				now, errCode := getTimestamp(w.monotonicClockStartNs, clockSub.clockId)
-				if errCode != errnoSuccess {
-					// Invalid clock ID
-					events = append(events, event{
-						userData:  sub.userData,
-						errorCode: int16(errnoInval),
-						eventType: eventTypeClock,
-					})
-					continue
-				}
-				timeout = max(int64(clockSub.timeout)-now, 0)
-			} else {
-				// Relative time
-				timeout = int64(clockSub.timeout)
-			}
-
-			// Track the maximum sleep duration
-			duration := time.Duration(timeout)
-			if duration > sleepDuration {
-				sleepDuration = duration
-			}
-
-			// Store clock event for later - only add it if we actually sleep
-			clockEvents = append(clockEvents, event{
-				userData:  sub.userData,
-				errorCode: int16(errnoSuccess),
-				eventType: eventTypeClock,
-			})
-		case eventTypeFdRead, eventTypeFdWrite:
-			fdSub := parseSubscriptionFdReadwrite(sub.body)
-			fdIndex := int32(fdSub.fd)
-
-			// Validate the FD and check rights
-			fd, errCode := w.fs.getFileOrDir(fdIndex, RightsPollFdReadwrite)
-			if errCode != errnoSuccess {
-				events = append(events, event{
-					userData:  sub.userData,
-					errorCode: int16(errCode),
-					eventType: sub.subscriptionType,
-				})
+			timeout, clockEvent := w.handleClockSubscription(sub)
+			if clockEvent.errorCode != int16(errnoSuccess) {
+				events = append(events, clockEvent)
 				continue
 			}
-
-			// Check if the FD is actually ready for the requested operation
-			var isReady bool
-			var nbytes uint64
-
-			// For stdin/stdout/stderr, check based on the FD and operation type
-			switch fdIndex {
-			case 0: // stdin
-				// stdin is readable (if there's data), but NOT writable
-				isReady = (sub.subscriptionType == eventTypeFdRead)
-			case 1, 2: // stdout, stderr
-				// stdout/stderr are writable, but NOT readable
-				isReady = (sub.subscriptionType == eventTypeFdWrite)
-			default:
-				// Regular files are always ready for both read and write
-				if fd.fileType == fileTypeRegularFile {
-					isReady = true
-					// Try to get file size for regular files
-					if info, err := fd.file.Stat(); err == nil {
-						nbytes = uint64(info.Size())
-					}
-				} else {
-					// For other file types (directories, etc.), consider them ready
-					isReady = true
-				}
+			sleepDuration = max(sleepDuration, timeout)
+			clockEvents = append(clockEvents, clockEvent)
+		case eventTypeFdRead, eventTypeFdWrite:
+			if fdEvent := w.handleFdSubscription(sub); fdEvent != nil {
+				events = append(events, *fdEvent)
 			}
-
-			// Only generate an event if the FD is ready
-			if isReady {
-				events = append(events, event{
-					userData:  sub.userData,
-					errorCode: int16(errnoSuccess),
-					eventType: sub.subscriptionType,
-					fdReadWrite: eventFdReadwrite{
-						nBytes: nbytes,
-						// TODO: Implement proper hangup detection using syscall.Select or
-						// unix.Poll to set eventRwFlagsFdReadwriteHangup when appropriate.
-						flags: 0,
-					},
-				})
-			}
-
 		default:
-			// Unknown event type
 			events = append(events, event{
 				userData:  sub.userData,
 				errorCode: int16(errnoInval),
@@ -244,8 +239,7 @@ func (w *WasiModule) pollOneoff(
 
 	// Determine if we need to sleep
 	// Only sleep if there are no immediately ready FD events
-	hasReadyFdEvents := len(events) > 0
-	if sleepDuration > 0 && !hasReadyFdEvents {
+	if sleepDuration > 0 && len(events) == 0 {
 		// No FD events are ready, so we sleep and then return clock events
 		time.Sleep(sleepDuration)
 		events = append(events, clockEvents...)
@@ -260,11 +254,9 @@ func (w *WasiModule) pollOneoff(
 		}
 	}
 
-	// Write the number of events
 	err := memory.StoreUint32(0, uint32(neventsPtr), uint32(len(events)))
 	if err != nil {
 		return errnoFault
 	}
-
 	return errnoSuccess
 }
