@@ -18,6 +18,7 @@ package wasip1
 
 import (
 	"encoding/binary"
+	"math"
 	"time"
 	"unsafe"
 
@@ -62,26 +63,25 @@ type eventFdReadwrite struct {
 
 type event struct {
 	userData    uint64
-	errorCode   int16 // u16 in WASI spec, not u32
+	errorCode   int16
 	eventType   uint8
 	fdReadWrite eventFdReadwrite
 }
 
-// parseSubscription reads a Subscription struct from memory.
-func parseSubscription(
-	memory *epsilon.Memory,
-	offset uint32,
-) (subscription, error) {
-	data, err := memory.Get(0, offset, uint32(unsafe.Sizeof(subscription{})))
-	if err != nil {
-		return subscription{}, err
-	}
+func (e event) bytes() []byte {
+	var data [32]byte
+	binary.LittleEndian.PutUint64(data[0:8], e.userData)
+	binary.LittleEndian.PutUint16(data[8:10], uint16(e.errorCode))
+	data[10] = e.eventType
+	binary.LittleEndian.PutUint64(data[16:24], e.fdReadWrite.nBytes)
+	binary.LittleEndian.PutUint16(data[24:26], e.fdReadWrite.flags)
+	return data[:]
+}
 
-	var sub subscription
-	sub.userData = binary.LittleEndian.Uint64(data[0:8])
-	sub.subscriptionType = data[8]
-	copy(sub.body[:], data[16:48])
-	return sub, nil
+// pendingClock stores successful clock subscriptions with a future timeout.
+type pendingClock struct {
+	timeout time.Duration
+	event   event
 }
 
 // parseSubscriptionClock extracts clock subscription fields from the body.
@@ -100,17 +100,6 @@ func parseSubscriptionFdReadwrite(body [32]byte) subscriptionFdReadwrite {
 	return subscriptionFdReadwrite{
 		fd: binary.LittleEndian.Uint32(body[0:4]),
 	}
-}
-
-// writeEvent writes an Event struct to memory.
-func writeEvent(memory *epsilon.Memory, offset uint32, event event) error {
-	data := make([]byte, 32)
-	binary.LittleEndian.PutUint64(data[0:8], event.userData)
-	binary.LittleEndian.PutUint16(data[8:10], uint16(event.errorCode))
-	data[10] = event.eventType
-	binary.LittleEndian.PutUint64(data[16:24], event.fdReadWrite.nBytes)
-	binary.LittleEndian.PutUint16(data[24:26], event.fdReadWrite.flags)
-	return memory.Set(0, offset, data)
 }
 
 const maxSubscriptions = 4096
@@ -192,6 +181,28 @@ func (w *WasiModule) handleFdSubscription(sub subscription) *event {
 	}
 }
 
+func getSubscriptions(
+	memory *epsilon.Memory,
+	ptr, nsubscriptions int32,
+) ([]subscription, error) {
+	size := uint32(unsafe.Sizeof(subscription{}))
+	data, err := memory.Get(uint32(ptr), 0, uint32(nsubscriptions)*size)
+	if err != nil {
+		return nil, err
+	}
+
+	subscriptions := make([]subscription, nsubscriptions)
+	for i := range nsubscriptions {
+		offset := uint32(i) * size
+		subscriptions[i] = subscription{
+			userData:         binary.LittleEndian.Uint64(data[offset : offset+8]),
+			subscriptionType: data[offset+8],
+		}
+		copy(subscriptions[i].body[:], data[offset+16:offset+48])
+	}
+	return subscriptions, nil
+}
+
 func (w *WasiModule) pollOneoff(
 	memory *epsilon.Memory,
 	inPtr, outPtr, nsubscriptions, neventsPtr int32,
@@ -200,20 +211,14 @@ func (w *WasiModule) pollOneoff(
 		return errnoInval
 	}
 
-	subscriptions := make([]subscription, nsubscriptions)
-	for i := range nsubscriptions {
-		offset := uint32(inPtr) + uint32(i)*uint32(unsafe.Sizeof(subscription{}))
-		sub, err := parseSubscription(memory, offset)
-		if err != nil {
-			return errnoFault
-		}
-		subscriptions[i] = sub
+	subscriptions, err := getSubscriptions(memory, inPtr, nsubscriptions)
+	if err != nil {
+		return errnoFault
 	}
 
-	events := make([]event, 0, nsubscriptions)
-	var sleepDuration time.Duration
-	var clockEvents []event
-
+	var pendingClocks []pendingClock
+	var events []event
+	minSleep := time.Duration(math.MaxInt64)
 	for _, sub := range subscriptions {
 		switch sub.subscriptionType {
 		case eventTypeClock:
@@ -222,8 +227,13 @@ func (w *WasiModule) pollOneoff(
 				events = append(events, clockEvent)
 				continue
 			}
-			sleepDuration = max(sleepDuration, timeout)
-			clockEvents = append(clockEvents, clockEvent)
+
+			if timeout <= 0 {
+				events = append(events, clockEvent)
+			} else {
+				minSleep = min(minSleep, timeout)
+				pendingClocks = append(pendingClocks, pendingClock{timeout, clockEvent})
+			}
 		case eventTypeFdRead, eventTypeFdWrite:
 			if fdEvent := w.handleFdSubscription(sub); fdEvent != nil {
 				events = append(events, *fdEvent)
@@ -237,25 +247,31 @@ func (w *WasiModule) pollOneoff(
 		}
 	}
 
-	// Determine if we need to sleep
-	// Only sleep if there are no immediately ready FD events
-	if sleepDuration > 0 && len(events) == 0 {
-		// No FD events are ready, so we sleep and then return clock events
-		time.Sleep(sleepDuration)
-		events = append(events, clockEvents...)
+	// Only sleep if there are no immediate events and we have pending clocks
+	if len(events) == 0 && len(pendingClocks) > 0 {
+		time.Sleep(minSleep)
+		for _, pc := range pendingClocks {
+			// Include any clock event that should have fired by now.
+			if pc.timeout <= minSleep {
+				events = append(events, pc.event)
+			}
+		}
 	}
-	// If there ARE ready FD events, we don't sleep and don't return clock events
 
-	// Write events to output memory
-	for i, e := range events {
-		offset := uint32(outPtr) + uint32(i)*uint32(unsafe.Sizeof(event{}))
-		if err := writeEvent(memory, offset, e); err != nil {
+	nEvents := uint32(len(events))
+	if nEvents > 0 {
+		const eventSize = 32
+		buf := make([]byte, nEvents*eventSize)
+		for i, e := range events {
+			copy(buf[i*eventSize:], e.bytes())
+		}
+
+		if err := memory.Set(uint32(outPtr), 0, buf); err != nil {
 			return errnoFault
 		}
 	}
 
-	err := memory.StoreUint32(0, uint32(neventsPtr), uint32(len(events)))
-	if err != nil {
+	if err := memory.StoreUint32(uint32(neventsPtr), 0, nEvents); err != nil {
 		return errnoFault
 	}
 	return errnoSuccess
