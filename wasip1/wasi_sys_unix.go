@@ -62,7 +62,7 @@ func mkdirat(dir *os.File, path string, mode uint32) error {
 		return os.ErrInvalid
 	}
 
-	parentFd, _, _, err := walkToParent(dir, "", components, 0)
+	parentFd, _, _, err := walkToParent(dir, components, 0)
 	if err != nil {
 		return err
 	}
@@ -71,12 +71,7 @@ func mkdirat(dir *os.File, path string, mode uint32) error {
 		defer unix.Close(parentFd)
 	}
 
-	finalName := components[len(components)-1]
-	if err := unix.Mkdirat(parentFd, finalName, mode); err != nil {
-		return err
-	}
-
-	return nil
+	return unix.Mkdirat(parentFd, components[len(components)-1], mode)
 }
 
 // stat returns the filestat of a file or directory relative to a directory.
@@ -112,6 +107,13 @@ func fdstat(file *os.File) (filestat, error) {
 		return filestat{}, err
 	}
 	return statFromUnix(&stat), nil
+}
+
+// datasync synchronizes file data to storage.
+// Ideally this would use fdatasync (data only, not metadata) but it's not
+// available on macOS. Using fsync is a safe superset that also syncs metadata.
+func datasync(file *os.File) error {
+	return unix.Fsync(int(file.Fd()))
 }
 
 // readDirEntries reads directory entries from a directory, returning synthetic
@@ -211,11 +213,7 @@ func utimes(
 		defer unix.Close(dirFd)
 	}
 
-	flags := unix.AT_SYMLINK_NOFOLLOW
-	if err := unix.UtimesNanoAt(dirFd, fileName, times, flags); err != nil {
-		return err
-	}
-	return nil
+	return unix.UtimesNanoAt(dirFd, fileName, times, unix.AT_SYMLINK_NOFOLLOW)
 }
 
 func utimesNanoAt(file *os.File, atim, mtim int64, fstFlags int32) error {
@@ -284,12 +282,7 @@ func linkat(
 		defer unix.Close(newDirFd)
 	}
 
-	err = unix.Linkat(oldDirFd, oldName, newDirFd, newName, 0)
-	if err != nil {
-		return err
-	}
-
-	return nil
+	return unix.Linkat(oldDirFd, oldName, newDirFd, newName, 0)
 }
 
 // readlink reads the contents of a symbolic link.
@@ -308,18 +301,7 @@ func readlink(dir *os.File, path string) (string, error) {
 	if dirFd != int(dir.Fd()) {
 		defer unix.Close(dirFd)
 	}
-
-	buf := make([]byte, 256)
-	for {
-		n, err := unix.Readlinkat(dirFd, name, buf)
-		if err != nil {
-			return "", err
-		}
-		if n < len(buf) {
-			return string(buf[:n]), nil
-		}
-		buf = make([]byte, len(buf)*2)
-	}
+	return readlinkat(dirFd, name)
 }
 
 // rmdirat removes an empty directory.
@@ -339,12 +321,7 @@ func rmdirat(dir *os.File, path string) error {
 		defer unix.Close(dirFd)
 	}
 
-	err = unix.Unlinkat(dirFd, name, unix.AT_REMOVEDIR)
-	if err != nil {
-		return err
-	}
-
-	return nil
+	return unix.Unlinkat(dirFd, name, unix.AT_REMOVEDIR)
 }
 
 // renameat renames a file or directory.
@@ -379,12 +356,7 @@ func renameat(
 		defer unix.Close(newDirFd)
 	}
 
-	err = unix.Renameat(oldDirFd, oldName, newDirFd, newName)
-	if err != nil {
-		return err
-	}
-
-	return nil
+	return unix.Renameat(oldDirFd, oldName, newDirFd, newName)
 }
 
 // symlinkat creates a symbolic link.
@@ -413,12 +385,7 @@ func symlinkat(target string, dir *os.File, path string) error {
 		defer unix.Close(dirFd)
 	}
 
-	err = unix.Symlinkat(target, dirFd, name)
-	if err != nil {
-		return err
-	}
-
-	return nil
+	return unix.Symlinkat(target, dirFd, name)
 }
 
 // unlinkat removes a file (but not a directory).
@@ -430,9 +397,6 @@ func symlinkat(target string, dir *os.File, path string) error {
 //
 // Returns EISDIR if the path refers to a directory.
 func unlinkat(dir *os.File, path string) error {
-	// Preserve trailing slash for proper syscall semantics
-	hasTrailingSlash := strings.HasSuffix(path, string(filepath.Separator))
-
 	dirFd, name, err := resolvePath(dir, path, false, 0)
 	if err != nil {
 		return err
@@ -442,16 +406,11 @@ func unlinkat(dir *os.File, path string) error {
 	}
 
 	// Restore trailing slash so syscall returns correct error
-	if hasTrailingSlash {
+	if strings.HasSuffix(path, string(filepath.Separator)) {
 		name += string(filepath.Separator)
 	}
 
-	err = unix.Unlinkat(dirFd, name, 0)
-	if err != nil {
-		return err
-	}
-
-	return nil
+	return unix.Unlinkat(dirFd, name, 0)
 }
 
 // openat opens a file or directory relative to a directory.
@@ -569,10 +528,7 @@ func shutdown(file *os.File, how int32) error {
 		return syscall.EINVAL
 	}
 
-	if err := unix.Shutdown(int(file.Fd()), sysHow); err != nil {
-		return err
-	}
-	return nil
+	return unix.Shutdown(int(file.Fd()), sysHow)
 }
 
 // walkToParent walks through intermediate path components (all except the last)
@@ -581,8 +537,6 @@ func shutdown(file *os.File, how int32) error {
 //
 // Parameters:
 //   - dir: the sandbox root directory (symlinks are resolved relative to this)
-//   - basePath: prepended to the returned parentPath (use "" to get a path
-//     relative to dir)
 //   - components: the path components to walk
 //   - depth: current symlink resolution depth
 //
@@ -595,7 +549,6 @@ func shutdown(file *os.File, how int32) error {
 // The caller is responsible for closing parentFd if it differs from dir.Fd().
 func walkToParent(
 	dir *os.File,
-	basePath string,
 	components []string,
 	depth int,
 ) (int, string, int, error) {
@@ -604,115 +557,68 @@ func walkToParent(
 	}
 
 	dirFd := int(dir.Fd())
-	currentDirFd := dirFd
-	parentPath := basePath
+	parentFd := dirFd
+	parentPath := ""
+
+	// Helper to close parentFd if it differs from dir.Fd
+	closeParent := func() {
+		if parentFd != dirFd {
+			unix.Close(parentFd)
+		}
+	}
+
+	// Re-calculates path components and restarts the walk from root
+	restart := func(newBase string, remain []string) (int, string, int, error) {
+		closeParent()
+
+		newComponents := append(splitPath(newBase), remain...)
+		if len(newComponents) == 0 {
+			newComponents = []string{"."}
+		}
+
+		return walkToParent(dir, newComponents, depth+1)
+	}
 
 	for i, component := range components[:len(components)-1] {
-		// Skip "." components in the middle of the path
 		if component == "." {
 			continue
 		}
 
-		// Handle ".." component - must traverse to parent safely
-		// SECURITY: We do NOT use physical ".." traversal (unix.Openat with "..")
-		// because that is vulnerable to TOCTOU attacks via directory renaming.
-		// Instead, we compute the new logical path and re-walk from root.
 		if component == ".." {
-			// Check if we're at the root - cannot go above sandbox
+			// Check if we're at the root, we cannot go above sandbox
 			if parentPath == "" {
-				if currentDirFd != dirFd {
-					unix.Close(currentDirFd)
-				}
 				return 0, "", depth, syscall.EPERM
 			}
-
-			// Close current fd before restarting
-			if currentDirFd != dirFd {
-				unix.Close(currentDirFd)
-			}
-
-			// Compute new path: remove last component from parentPath, add remaining
 			newParentPath := filepath.Dir(parentPath)
 			if newParentPath == "." {
 				newParentPath = ""
 			}
-
-			// Build new components: newParentPath + remaining components
-			remaining := components[i+1:]
-			var newComponents []string
-			if newParentPath != "" {
-				newComponents = splitPath(newParentPath)
-			}
-			newComponents = append(newComponents, remaining...)
-
-			// If no components left, we're at root - add a placeholder
-			if len(newComponents) == 0 {
-				newComponents = []string{"."}
-			}
-
-			// Restart from root with the new path (safe, no physical ".." used)
-			return walkToParent(dir, "", newComponents, depth+1)
+			return restart(newParentPath, components[i+1:])
 		}
 
-		newFd, err := unix.Openat(
-			currentDirFd,
-			component,
-			unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_DIRECTORY|unix.O_CLOEXEC,
-			0,
-		)
+		mode := unix.O_RDONLY | unix.O_NOFOLLOW | unix.O_DIRECTORY | unix.O_CLOEXEC
+		newFd, err := unix.Openat(parentFd, component, mode, 0)
 
+		// Check if this is a symlink we need to follow
+		if errors.Is(err, syscall.ELOOP) || errors.Is(err, syscall.ENOTDIR) {
+			resolvedPath, err := resolveSymlink(parentFd, parentPath, component)
+			if err != nil {
+				closeParent()
+				return 0, "", depth, err
+			}
+			return restart(resolvedPath, components[i+1:])
+		}
+
+		closeParent()
 		if err != nil {
-			// Check if this is a symlink we need to follow
-			if errors.Is(err, syscall.ELOOP) || errors.Is(err, syscall.ENOTDIR) {
-				// Could be a symlink - try to read it
-				target, readErr := readlinkat(currentDirFd, component)
-				if readErr != nil {
-					// Not a symlink, return the original error
-					if currentDirFd != dirFd {
-						unix.Close(currentDirFd)
-					}
-					return 0, "", depth, err
-				}
-
-				resolvedPath, pathErr := resolveSymlinkTarget(parentPath, target)
-				if pathErr != nil {
-					if currentDirFd != dirFd {
-						unix.Close(currentDirFd)
-					}
-					return 0, "", depth, pathErr
-				}
-
-				// Build the new full path: resolved symlink + remaining components
-				remaining := components[i+1:]
-				newComponents := splitPath(resolvedPath)
-				newComponents = append(newComponents, remaining...)
-
-				// Close current fd before restarting
-				if currentDirFd != dirFd {
-					unix.Close(currentDirFd)
-				}
-
-				// Restart from root with the resolved path
-				return walkToParent(dir, "", newComponents, depth+1)
-			}
-
-			// Close intermediate fds we opened (but not the original dir)
-			if currentDirFd != dirFd {
-				unix.Close(currentDirFd)
-			}
 			return 0, "", depth, err
 		}
 
-		// Close intermediate fds we opened (but not the original dir)
-		if currentDirFd != dirFd {
-			unix.Close(currentDirFd)
-		}
-
-		currentDirFd = newFd
+		parentFd = newFd
 		parentPath = filepath.Join(parentPath, component)
 	}
 
-	return currentDirFd, parentPath, depth, nil
+	return parentFd, parentPath, depth, nil
 }
 
 func getComponents(path string) ([]string, error) {
@@ -736,26 +642,13 @@ func getComponents(path string) ([]string, error) {
 // permission and existence checks on intermediate directories.
 // It handles both forward slashes and the OS-specific separator.
 func splitPath(path string) []string {
-	// Normalize multiple slashes and handle "." components, but preserve ".."
-	// We cannot use filepath.Clean because it lexically removes ".."
-	parts := strings.Split(path, string(filepath.Separator))
-	result := make([]string, 0, len(parts))
-	for _, part := range parts {
-		switch part {
-		case "", ".":
-			// Skip empty parts and current directory references
-			continue
-		default:
-			result = append(result, part)
-		}
-	}
-
-	// If the path was just "." or empty, return that
-	if len(result) == 0 {
+	parts := strings.FieldsFunc(path, func(r rune) bool {
+		return r == filepath.Separator
+	})
+	if len(parts) == 0 {
 		return []string{"."}
 	}
-
-	return result
+	return parts
 }
 
 // isRelativePath checks if a path is a valid relative path for sandbox
@@ -780,10 +673,24 @@ func isRelativePath(path string) bool {
 	return true
 }
 
-// resolveSymlinkTarget computes a sandbox-safe resolved path for a symlink.
-// Absolute symlinks are resolved relative to the sandbox root, relative
-// symlinks are resolved relative to parentPath.
-func resolveSymlinkTarget(parentPath, target string) (string, error) {
+// resolveSymlink reads a symlink and returns a sandbox-safe resolved path.
+//
+// Parameters:
+//   - parentFd: fd of the directory containing the symlink
+//   - parentPath: path of parentFd relative to the sandbox root
+//   - name: name of the symlink within the parent directory
+//
+// Returns the resolved path relative to the sandbox root. Absolute symlink
+// targets are resolved relative to the sandbox root (not the filesystem root),
+// while relative targets are resolved relative to parentPath.
+//
+// Returns EPERM if the resolved path would escape the sandbox.
+func resolveSymlink(parentFd int, parentPath, name string) (string, error) {
+	target, err := readlinkat(parentFd, name)
+	if err != nil {
+		return "", err
+	}
+
 	var resolved string
 	if filepath.IsAbs(target) {
 		resolved = strings.TrimPrefix(target, string(filepath.Separator))
@@ -794,6 +701,21 @@ func resolveSymlinkTarget(parentPath, target string) (string, error) {
 		return "", syscall.EPERM
 	}
 	return resolved, nil
+}
+
+// readlinkat reads a symlink target, growing the buffer as needed.
+func readlinkat(dirFd int, name string) (string, error) {
+	buf := make([]byte, 256)
+	for {
+		n, err := unix.Readlinkat(dirFd, name, buf)
+		if err != nil {
+			return "", err
+		}
+		if n < len(buf) {
+			return string(buf[:n]), nil
+		}
+		buf = make([]byte, len(buf)*2)
+	}
 }
 
 // resolvePath resolves a path relative to a directory os.File. It returns the
@@ -831,28 +753,33 @@ func resolvePath(
 		return int(dir.Fd()), ".", nil
 	}
 
-	parentFd, parentPath, newDepth, err := walkToParent(dir, "", comps, depth)
+	parentFd, parentPath, newDepth, err := walkToParent(dir, comps, depth)
 	if err != nil {
 		return 0, "", err
 	}
-	// Note: We MUST NOT defer close parentFd here because we might return it.
-	// We must manually close it on all error paths or recursive calls if it
-	// differs from dir.Fd().
+
+	// closeParent closes parentFd if we own it (differs from dir.Fd). We cannot
+	// use defer because we may return parentFd to the caller.
+	closeParent := func() {
+		if parentFd != int(dir.Fd()) {
+			unix.Close(parentFd)
+		}
+	}
 
 	finalName := comps[len(comps)-1]
 
 	// Always stat with AT_SYMLINK_NOFOLLOW first to check if it's a symlink
 	var statBuf unix.Stat_t
-	flags := unix.AT_SYMLINK_NOFOLLOW
-	if err := unix.Fstatat(parentFd, finalName, &statBuf, flags); err != nil {
-		// If the error is ENOENT, it simply means the file doesn't exist.
-		if errors.Is(err, syscall.ENOENT) {
-			return parentFd, finalName, nil
-		}
+	err = unix.Fstatat(parentFd, finalName, &statBuf, unix.AT_SYMLINK_NOFOLLOW)
 
-		if parentFd != int(dir.Fd()) {
-			unix.Close(parentFd)
-		}
+	// If the error is ENOENT, the file doesn't exist. We return success (for
+	// O_CREAT support)
+	if errors.Is(err, syscall.ENOENT) {
+		return parentFd, finalName, nil
+	}
+
+	if err != nil {
+		closeParent()
 		return 0, "", err
 	}
 
@@ -862,43 +789,14 @@ func resolvePath(
 	}
 
 	// It's a symlink and we need to follow it securely.
-	// Read the symlink target and resolve it within the sandbox.
-	target, err := readlinkat(parentFd, finalName)
+	resolvedPath, err := resolveSymlink(parentFd, parentPath, finalName)
+	closeParent()
 	if err != nil {
-		if parentFd != int(dir.Fd()) {
-			unix.Close(parentFd)
-		}
 		return 0, "", err
-	}
-
-	// We are done with parentFd for this level.
-	if parentFd != int(dir.Fd()) {
-		unix.Close(parentFd)
-	}
-
-	resolvedPath, pathErr := resolveSymlinkTarget(parentPath, target)
-	if pathErr != nil {
-		return 0, "", pathErr
 	}
 
 	// Restart resolution with the new target and updated depth
 	return resolvePath(dir, resolvedPath, followSymlinks, newDepth+1)
-}
-
-// readlinkat reads the target of a symlink relative to a directory fd.
-func readlinkat(dirFd int, name string) (string, error) {
-	buf := make([]byte, 256)
-	for {
-		n, err := unix.Readlinkat(dirFd, name, buf)
-		if err != nil {
-			return "", err
-		}
-		if n < len(buf) {
-			return string(buf[:n]), nil
-		}
-		// Buffer was too small, double it and retry
-		buf = make([]byte, len(buf)*2)
-	}
 }
 
 // statFromUnix converts a unix.Stat_t to a filestat.
@@ -965,33 +863,10 @@ func buildTimespec(atim, mtim int64, fstFlags int32) ([]unix.Timespec, error) {
 
 // mapError maps Go/Syscall errors to WASI errno.
 func mapError(err error) int32 {
-	if err == nil {
-		return errnoSuccess
+	if unwrapped := errors.Unwrap(err); unwrapped != nil {
+		err = unwrapped
 	}
 
-	// Unpack os.PathError/LinkError
-	if pe, ok := err.(*os.PathError); ok {
-		err = pe.Err
-	}
-	if le, ok := err.(*os.LinkError); ok {
-		err = le.Err
-	}
-	if se, ok := err.(*os.SyscallError); ok {
-		err = se.Err
-	}
-
-	// Check specific errors
-	if err == os.ErrNotExist {
-		return errnoNoEnt
-	}
-	if err == os.ErrExist {
-		return errnoExist
-	}
-	if err == os.ErrPermission {
-		return errnoAcces
-	}
-
-	// Check syscall errno
 	if errno, ok := err.(syscall.Errno); ok {
 		switch errno {
 		case syscall.EACCES:
@@ -1025,40 +900,5 @@ func mapError(err error) int32 {
 		}
 	}
 
-	// Also check unix.Errno
-	if errno, ok := err.(unix.Errno); ok {
-		switch errno {
-		case unix.EACCES:
-			return errnoAcces
-		case unix.EPERM:
-			return errnoPerm
-		case unix.ENOENT:
-			return errnoNoEnt
-		case unix.EEXIST:
-			return errnoExist
-		case unix.EISDIR:
-			return errnoIsDir
-		case unix.ENOTDIR:
-			return errnoNotDir
-		case unix.EINVAL:
-			return errnoInval
-		case unix.ENOTEMPTY:
-			return errnoNotEmpty
-		case unix.ELOOP:
-			return errnoLoop
-		case unix.EBADF:
-			return errnoBadF
-		case unix.EMFILE, unix.ENFILE:
-			return errnoNFile
-		case unix.ENAMETOOLONG:
-			return errnoNameTooLong
-		case unix.EPIPE:
-			return errnoPipe
-		case unix.EAGAIN:
-			return errnoAgain
-		}
-	}
-
-	// Fallback
 	return errnoNotCapable
 }
