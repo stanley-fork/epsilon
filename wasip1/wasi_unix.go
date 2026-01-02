@@ -410,7 +410,7 @@ func (w *WasiModule) ToImports() map[string]map[string]any {
 			)
 		})).
 		AddHostFunc("fd_datasync", bind(func(args []any) int32 {
-			return w.fs.dataSync(args[0].(int32))
+			return w.fs.sync(args[0].(int32))
 		})).
 		AddHostFunc("fd_sync", bind(func(args []any) int32 {
 			return w.fs.sync(args[0].(int32))

@@ -34,17 +34,14 @@ type fsEntry struct {
 	isDir   bool   // true = directory
 }
 
-// dir creates a directory entry.
 func dir(path string) fsEntry {
 	return fsEntry{path: path, isDir: true}
 }
 
-// file creates a file entry with the given content.
 func file(path, content string) fsEntry {
 	return fsEntry{path: path, content: content}
 }
 
-// link creates a symlink entry pointing to target.
 func link(path, target string) fsEntry {
 	return fsEntry{path: path, link: target}
 }
@@ -85,7 +82,6 @@ func testFS(t *testing.T, entries ...fsEntry) (string, *os.File) {
 	if err != nil {
 		t.Fatalf("failed to open root: %v", err)
 	}
-
 	return root, dirFd
 }
 

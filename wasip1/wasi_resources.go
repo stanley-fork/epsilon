@@ -175,7 +175,6 @@ func (w *wasiResourceTable) allocate(
 	if err := fd.file.Truncate(targetSize); err != nil {
 		return mapError(err)
 	}
-
 	return errnoSuccess
 }
 
@@ -186,17 +185,6 @@ func (w *wasiResourceTable) close(fdIndex int32) int32 {
 	}
 	fd.close()
 	delete(w.fds, fdIndex)
-	return errnoSuccess
-}
-
-func (w *wasiResourceTable) dataSync(fdIndex int32) int32 {
-	fd, ok := w.fds[fdIndex]
-	if !ok {
-		return errnoBadF
-	}
-	if err := datasync(fd.file); err != nil {
-		return mapError(err)
-	}
 	return errnoSuccess
 }
 
@@ -239,7 +227,6 @@ func (w *wasiResourceTable) setStatFlags(fdIndex, fdFlags int32) int32 {
 	if err := setFdFlags(fd.file, fdFlags); err != nil {
 		return mapError(err)
 	}
-
 	return errnoSuccess
 }
 
@@ -356,7 +343,6 @@ func (w *wasiResourceTable) getPrestat(
 	if err != nil {
 		return errnoFault
 	}
-
 	return errnoSuccess
 }
 
@@ -376,7 +362,6 @@ func (w *wasiResourceTable) prestatDirName(
 	if err := memory.Set(0, uint32(pathPtr), []byte(fd.guestPath)); err != nil {
 		return errnoFault
 	}
-
 	return errnoSuccess
 }
 
@@ -755,11 +740,7 @@ func (w *wasiResourceTable) pathReadlink(
 	}
 
 	// Write as much as fits in the buffer
-	targetBytes := []byte(target)
-	if int32(len(targetBytes)) > bufLen {
-		targetBytes = targetBytes[:bufLen]
-	}
-
+	targetBytes := []byte(target)[:min(int32(len(target)), bufLen)]
 	if err := memory.Set(0, uint32(bufPtr), targetBytes); err != nil {
 		return errnoFault
 	}
@@ -891,7 +872,6 @@ func (w *wasiResourceTable) sockAccept(
 		w.close(newFdIndex)
 		return errnoFault
 	}
-
 	return errnoSuccess
 }
 
@@ -915,13 +895,12 @@ func (w *wasiResourceTable) sockRecv(
 		return errCode
 	}
 
-	// We use os.File.Read for reading from the socker, which does not return
+	// We use os.File.Read for reading from the socket, which does not return
 	// output flags (like MSG_TRUNC). For simple stream operations, returning 0 is
 	// acceptable.
 	if err := memory.StoreUint16(0, uint32(roFlagsPtr), 0); err != nil {
 		return errnoFault
 	}
-
 	return errnoSuccess
 }
 

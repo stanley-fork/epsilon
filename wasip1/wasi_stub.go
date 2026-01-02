@@ -21,7 +21,6 @@ import (
 	"os"
 )
 
-// WasiConfig contains configuration for creating a new WasiModule.
 type WasiConfig struct {
 	Args     []string
 	Env      map[string]string
@@ -35,14 +34,10 @@ type WasiConfig struct {
 // On non-Unix platforms, WASI is not supported.
 type WasiModule struct{}
 
-// NewWasiModule returns an error on non-Unix platforms because WASI filesystem
-// operations are not implemented.
 func NewWasiModule(config WasiConfig) (*WasiModule, error) {
 	return nil, errors.New("WASI is not supported on this platform")
 }
 
-// ToImports returns an empty map on non-Unix platforms.
 func (w *WasiModule) ToImports() map[string]map[string]any { return nil }
 
-// Close is a no-op on non-Unix platforms.
 func (w *WasiModule) Close() {}

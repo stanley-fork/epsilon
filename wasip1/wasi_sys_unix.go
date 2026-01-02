@@ -109,13 +109,6 @@ func fdstat(file *os.File) (filestat, error) {
 	return statFromUnix(&stat), nil
 }
 
-// datasync synchronizes file data to storage.
-// Ideally this would use fdatasync (data only, not metadata) but it's not
-// available on macOS. Using fsync is a safe superset that also syncs metadata.
-func datasync(file *os.File) error {
-	return unix.Fsync(int(file.Fd()))
-}
-
 // readDirEntries reads directory entries from a directory, returning synthetic
 // "." and ".." entries followed by actual directory content. This is required
 // by WASI fd_readdir specification.
@@ -135,13 +128,11 @@ func readDirEntries(dir *os.File) ([]dirEntry, error) {
 		return nil, err
 	}
 
-	// Read actual directory entries
 	entries, err := dir.ReadDir(-1)
 	if err != nil {
 		return nil, err
 	}
 
-	// Build result: . and .. first, then actual entries
 	result := make([]dirEntry, 0, len(entries)+2)
 	result = append(
 		result,
@@ -320,7 +311,6 @@ func rmdirat(dir *os.File, path string) error {
 	if dirFd != int(dir.Fd()) {
 		defer unix.Close(dirFd)
 	}
-
 	return unix.Unlinkat(dirFd, name, unix.AT_REMOVEDIR)
 }
 
@@ -516,19 +506,16 @@ func accept(file *os.File) (int, error) {
 
 // shutdown shuts down a socket.
 func shutdown(file *os.File, how int32) error {
-	var sysHow int
 	switch how {
 	case shutRd:
-		sysHow = unix.SHUT_RD
+		return unix.Shutdown(int(file.Fd()), unix.SHUT_RD)
 	case shutWr:
-		sysHow = unix.SHUT_WR
+		return unix.Shutdown(int(file.Fd()), unix.SHUT_WR)
 	case shutRdWr:
-		sysHow = unix.SHUT_RDWR
+		return unix.Shutdown(int(file.Fd()), unix.SHUT_RDWR)
 	default:
 		return syscall.EINVAL
 	}
-
-	return unix.Shutdown(int(file.Fd()), sysHow)
 }
 
 // walkToParent walks through intermediate path components (all except the last)

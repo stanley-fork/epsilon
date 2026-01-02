@@ -175,11 +175,11 @@ type dirEntry struct {
 }
 
 // bytes serializes the dirEntry to the WASI dirent layout.
-// The cookie parameter is the position marker for this entry.
-func (d *dirEntry) bytes(cookie uint64) []byte {
+// The nextCookie parameter is the cookie for the next entry in the directory.
+func (d *dirEntry) bytes(nextCookie uint64) []byte {
 	nameLen := len(d.name)
 	buf := make([]byte, 24+nameLen)
-	binary.LittleEndian.PutUint64(buf[0:8], cookie)
+	binary.LittleEndian.PutUint64(buf[0:8], nextCookie)
 	binary.LittleEndian.PutUint64(buf[8:16], d.ino)
 	binary.LittleEndian.PutUint32(buf[16:20], uint32(nameLen))
 	buf[20] = uint8(d.fileType)
