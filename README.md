@@ -11,7 +11,7 @@
 * Fully supports [WebAssembly 2.0 Specification](https://webassembly.github.io/spec/versions/core/WebAssembly-2.0.pdf)
 * Runs on any architecture supported by Go (amd64, arm64, etc.) without requiring CGo
 * Allows embedding WebAssembly modules in Go applications
-* Includes experimental [WASI Preview 1](wasip1/README.md) support.
+* Includes experimental [WASI Preview 1](wasip1/README.md) support
 * Includes a command-line interface and interactive REPL
 
 ## Installation
