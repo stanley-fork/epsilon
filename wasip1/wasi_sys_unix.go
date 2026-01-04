@@ -751,7 +751,7 @@ func resolvePath(
 	}
 
 	if !isRelativePath(path) {
-		return 0, "", os.ErrInvalid
+		return 0, "", syscall.EPERM
 	}
 
 	comps, err := getComponents(path)
