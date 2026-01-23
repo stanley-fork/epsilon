@@ -144,8 +144,8 @@ go test ./epsilon/...
 # Run spec tests (requires git submodule)
 go test ./internal/spec_tests/...
 
-# Run WASI spec tests (requires git submodule, uv)
-./wasip1/wasi_tests.sh
+# Run WASI spec tests
+uv run --with-requirements requirements.txt wasip1/wasi_testsuite.py
 
 # Run benchmarks
 go test -bench . ./internal/benchmarks
