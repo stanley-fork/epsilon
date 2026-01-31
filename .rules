@@ -16,6 +16,7 @@
 # Git & Commits
 
 - **Commit Messages**: Do not use conventional commit prefixes (e.g., `chore:`, `feat:`, `fix:`, `docs:`). Use plain, descriptive language.
+- **Commit Authors**: Do not mark any commit as co-authored by agents. Commits should only include human authors.
 
 # Project Specifics
 
