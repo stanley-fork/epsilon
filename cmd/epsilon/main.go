@@ -38,7 +38,7 @@ func printUsage() {
 	flag.PrintDefaults()
 	fmt.Fprintf(os.Stderr, "\nExamples:\n")
 	fmt.Fprintf(os.Stderr, "  epsilon                                     Start interactive REPL\n")
-	fmt.Fprintf(os.Stderr, "  epsilon module.wasm                         Instantiate a module\n")
+	fmt.Fprintf(os.Stderr, "  epsilon module.wasm                         Run a WASI module\n")
 	fmt.Fprintf(os.Stderr, "  epsilon module.wasm add 5 10                Invoke a function\n")
 	fmt.Fprintf(os.Stderr, "  epsilon -arg foo -arg bar module.wasm       Pass args to WASI module\n")
 	fmt.Fprintf(os.Stderr, "  epsilon -env KEY=value module.wasm          Pass env vars to WASI module\n")
@@ -149,11 +149,12 @@ func runCLI(
 		return err
 	}
 
-	if len(args) == 1 {
-		return nil
+	funcName := wasip1.StartFunctionName
+	var funcArgs []string
+	if len(args) > 1 {
+		funcName = args[1]
+		funcArgs = args[2:]
 	}
-
-	funcName, funcArgs := args[1], args[2:]
 	results, err := parseAndInvokeFunction(instance, funcName, funcArgs)
 	if err != nil {
 		var procExitErr *wasip1.ProcExitError

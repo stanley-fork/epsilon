@@ -48,7 +48,7 @@ func main() {
 		InstantiateModuleWithImports(bytes.NewReader(wasm), wasiModule.ToImports())
 
 	// Invoke the _start function (WASI entry point)
-	_, err := instance.Invoke("_start")
+	_, err := instance.Invoke(wasip1.StartFunctionName)
 
 	// WASI modules call proc_exit(0) on success, which returns as an error.
 	// Check if it's a successful exit (code 0) vs a real error.

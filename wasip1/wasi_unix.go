@@ -302,7 +302,7 @@ func bindMem(
 	fn func(*epsilon.Memory, []any) int32,
 ) func(*epsilon.ModuleInstance, ...any) []any {
 	return func(inst *epsilon.ModuleInstance, args ...any) []any {
-		memory, err := inst.GetMemory(WASIMemoryExportName)
+		memory, err := inst.GetMemory(MemoryExportName)
 		if err != nil {
 			return []any{errnoFault}
 		}
@@ -311,7 +311,7 @@ func bindMem(
 }
 
 func (w *WasiModule) ToImports() map[string]map[string]any {
-	return epsilon.NewModuleImportBuilder(WASIModuleName).
+	return epsilon.NewModuleImportBuilder(ModuleName).
 		AddHostFunc("args_get", bindMem(func(m *epsilon.Memory, args []any) int32 {
 			return w.argsGet(m, args[0].(int32), args[1].(int32))
 		})).

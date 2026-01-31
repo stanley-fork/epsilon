@@ -30,9 +30,12 @@ func (e *ProcExitError) Error() string {
 	return fmt.Sprintf("proc_exit: %d", e.Code)
 }
 
+// WASI Application ABI constants.
+// See: https://github.com/WebAssembly/WASI/blob/wasi-0.1/application-abi.md
 const (
-	WASIMemoryExportName = "memory"
-	WASIModuleName       = "wasi_snapshot_preview1"
+	MemoryExportName  = "memory"
+	StartFunctionName = "_start"
+	ModuleName        = "wasi_snapshot_preview1"
 )
 
 const rightsAll int64 = ^0
