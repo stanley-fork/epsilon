@@ -151,6 +151,12 @@ uv run --with-requirements requirements.txt wasip1/wasi_testsuite.py
 go test -bench . ./internal/benchmarks
 ```
 
+### Releases
+
+New releases are managed with the `release` skill, just ask an agent (supported 
+agents are [gemini](https://github.com/google-gemini/gemini-cli/) and 
+[vibe](https://github.com/mistralai/mistral-vibe/)).
+
 ## Contributing
 
 See [`CONTRIBUTING.md`](CONTRIBUTING.md) for details.
