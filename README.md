@@ -96,6 +96,12 @@ Arguments:
   [args...]     Arguments to pass to the function
 
 Options:
+  -arg value
+        command-line argument
+  -dir value
+        directory to mount (use /from=/to to mount at a different path)
+  -env value
+        environment variable (KEY=VALUE)
   -version
         print version and exit
 
@@ -149,11 +155,6 @@ uv run --with-requirements requirements.txt wasip1/wasi_testsuite.py
 go test -bench . ./internal/benchmarks
 ```
 
-### Releases
-
-New releases are managed with the `release` skill, just ask an agent (supported 
-agents are [gemini](https://github.com/google-gemini/gemini-cli/) and 
-[vibe](https://github.com/mistralai/mistral-vibe/)).
 
 ## Contributing
 
