@@ -1365,7 +1365,7 @@ func (vm *vm) handleCall(frame *callFrame) error {
 
 func (vm *vm) handleCallIndirect(frame *callFrame) error {
 	expectedType := frame.module.types[frame.next()]
-	tableIndex := uint32(frame.next())
+	tableIndex := frame.next()
 	table := vm.getTable(frame, tableIndex)
 
 	elementIndex := vm.stack.popInt32()
@@ -1400,19 +1400,19 @@ func (vm *vm) handleSelect() {
 }
 
 func (vm *vm) handleGlobalGet(frame *callFrame) {
-	localIndex := uint32(frame.next())
+	localIndex := frame.next()
 	global := vm.getGlobal(frame, localIndex)
 	vm.stack.push(global.value)
 }
 
 func (vm *vm) handleGlobalSet(frame *callFrame) {
-	localIndex := uint32(frame.next())
+	localIndex := frame.next()
 	global := vm.getGlobal(frame, localIndex)
 	global.value = vm.stack.pop()
 }
 
 func (vm *vm) handleTableGet(frame *callFrame) error {
-	tableIndex := uint32(frame.next())
+	tableIndex := frame.next()
 	table := vm.getTable(frame, tableIndex)
 	index := vm.stack.popInt32()
 
@@ -1426,7 +1426,7 @@ func (vm *vm) handleTableGet(frame *callFrame) error {
 }
 
 func (vm *vm) handleTableSet(frame *callFrame) error {
-	tableIndex := uint32(frame.next())
+	tableIndex := frame.next()
 	table := vm.getTable(frame, tableIndex)
 	reference := vm.stack.popInt32()
 	index := vm.stack.popInt32()
@@ -1434,12 +1434,12 @@ func (vm *vm) handleTableSet(frame *callFrame) error {
 }
 
 func (vm *vm) handleMemorySize(frame *callFrame) {
-	memory := vm.getMemory(frame, uint32(frame.next()))
+	memory := vm.getMemory(frame, frame.next())
 	vm.stack.pushInt32(memory.Size())
 }
 
 func (vm *vm) handleMemoryGrow(frame *callFrame) {
-	memory := vm.getMemory(frame, uint32(frame.next()))
+	memory := vm.getMemory(frame, frame.next())
 	pages := vm.stack.popInt32()
 	oldSize := memory.Grow(pages)
 	vm.stack.pushInt32(oldSize)
@@ -1457,33 +1457,33 @@ func (vm *vm) handleRefIsNull() {
 }
 
 func (vm *vm) handleMemoryInit(frame *callFrame) error {
-	data := vm.getData(frame, uint32(frame.next()))
-	memory := vm.getMemory(frame, uint32(frame.next()))
+	data := vm.getData(frame, frame.next())
+	memory := vm.getMemory(frame, frame.next())
 	n, s, d := vm.stack.pop3Int32()
 	return memory.Init(uint32(n), uint32(s), uint32(d), data.content)
 }
 
 func (vm *vm) handleDataDrop(frame *callFrame) {
-	dataSegment := vm.getData(frame, uint32(frame.next()))
+	dataSegment := vm.getData(frame, frame.next())
 	dataSegment.content = nil
 }
 
 func (vm *vm) handleMemoryCopy(frame *callFrame) error {
-	destMemory := vm.getMemory(frame, uint32(frame.next()))
-	srcMemory := vm.getMemory(frame, uint32(frame.next()))
+	destMemory := vm.getMemory(frame, frame.next())
+	srcMemory := vm.getMemory(frame, frame.next())
 	n, s, d := vm.stack.pop3Int32()
 	return srcMemory.Copy(destMemory, uint32(n), uint32(s), uint32(d))
 }
 
 func (vm *vm) handleMemoryFill(frame *callFrame) error {
-	memory := vm.getMemory(frame, uint32(frame.next()))
+	memory := vm.getMemory(frame, frame.next())
 	n, val, offset := vm.stack.pop3Int32()
 	return memory.Fill(uint32(n), uint32(offset), byte(val))
 }
 
 func (vm *vm) handleTableInit(frame *callFrame) error {
-	element := vm.getElement(frame, uint32(frame.next()))
-	table := vm.getTable(frame, uint32(frame.next()))
+	element := vm.getElement(frame, frame.next())
+	table := vm.getTable(frame, frame.next())
 	n, s, d := vm.stack.pop3Int32()
 
 	switch element.mode {
@@ -1504,32 +1504,32 @@ func (vm *vm) handleTableInit(frame *callFrame) error {
 }
 
 func (vm *vm) handleElemDrop(frame *callFrame) {
-	element := vm.getElement(frame, uint32(frame.next()))
+	element := vm.getElement(frame, frame.next())
 	element.functionIndexes = nil
 	element.functionIndexesExpressions = nil
 }
 
 func (vm *vm) handleTableCopy(frame *callFrame) error {
-	destTable := vm.getTable(frame, uint32(frame.next()))
-	srcTable := vm.getTable(frame, uint32(frame.next()))
+	destTable := vm.getTable(frame, frame.next())
+	srcTable := vm.getTable(frame, frame.next())
 	n, s, d := vm.stack.pop3Int32()
 	return srcTable.Copy(destTable, n, s, d)
 }
 
 func (vm *vm) handleTableGrow(frame *callFrame) {
-	table := vm.getTable(frame, uint32(frame.next()))
+	table := vm.getTable(frame, frame.next())
 	n := vm.stack.popInt32()
 	val := vm.stack.popInt32()
 	vm.stack.pushInt32(table.Grow(n, val))
 }
 
 func (vm *vm) handleTableSize(frame *callFrame) {
-	table := vm.getTable(frame, uint32(frame.next()))
+	table := vm.getTable(frame, frame.next())
 	vm.stack.pushInt32(table.Size())
 }
 
 func (vm *vm) handleTableFill(frame *callFrame) error {
-	table := vm.getTable(frame, uint32(frame.next()))
+	table := vm.getTable(frame, frame.next())
 	n, val, i := vm.stack.pop3Int32()
 	return table.Fill(n, i, val)
 }
@@ -1681,7 +1681,7 @@ func handleStore[T any](
 	store func(*Memory, uint32, uint32, T) error,
 ) error {
 	_ = frame.next() // align (unused)
-	memory := vm.getMemory(frame, uint32(frame.next()))
+	memory := vm.getMemory(frame, frame.next())
 	offset := uint32(frame.next())
 	index := uint32(vm.stack.popInt32())
 	return store(memory, offset, index, val)
@@ -1695,7 +1695,7 @@ func handleLoad[T any, R any](
 	convert func(T) R,
 ) error {
 	_ = frame.next() // align (unused)
-	memory := vm.getMemory(frame, uint32(frame.next()))
+	memory := vm.getMemory(frame, frame.next())
 	offset := uint32(frame.next())
 	index := uint32(vm.stack.popInt32())
 	v, err := load(memory, offset, index)
@@ -1712,7 +1712,7 @@ func (vm *vm) handleLoadV128FromBytes(
 	sizeBytes uint32,
 ) error {
 	_ = frame.next() // align (unused)
-	memory := vm.getMemory(frame, uint32(frame.next()))
+	memory := vm.getMemory(frame, frame.next())
 	offset := uint32(frame.next())
 	index := vm.stack.popInt32()
 
@@ -1726,7 +1726,7 @@ func (vm *vm) handleLoadV128FromBytes(
 
 func (vm *vm) handleSimdLoadLane(frame *callFrame, laneSize uint32) error {
 	_ = frame.next() // align (unused)
-	memory := vm.getMemory(frame, uint32(frame.next()))
+	memory := vm.getMemory(frame, frame.next())
 	offset := uint32(frame.next())
 	laneIndex := uint32(frame.next())
 	v := vm.stack.popV128()
@@ -1743,7 +1743,7 @@ func (vm *vm) handleSimdLoadLane(frame *callFrame, laneSize uint32) error {
 
 func (vm *vm) handleSimdStoreLane(frame *callFrame, laneSize uint32) error {
 	_ = frame.next() // align (unused)
-	memory := vm.getMemory(frame, uint32(frame.next()))
+	memory := vm.getMemory(frame, frame.next())
 	offset := uint32(frame.next())
 	laneIndex := uint32(frame.next())
 	v := vm.stack.popV128()
@@ -1956,27 +1956,27 @@ func toStoreFuncIndexes(
 	return storeIndices
 }
 
-func (vm *vm) getTable(frame *callFrame, localIndex uint32) *Table {
+func (vm *vm) getTable(frame *callFrame, localIndex uint64) *Table {
 	tableIndex := frame.module.tableAddrs[localIndex]
 	return vm.store.tables[tableIndex]
 }
 
-func (vm *vm) getMemory(frame *callFrame, localIndex uint32) *Memory {
+func (vm *vm) getMemory(frame *callFrame, localIndex uint64) *Memory {
 	memoryIndex := frame.module.memAddrs[localIndex]
 	return vm.store.memories[memoryIndex]
 }
 
-func (vm *vm) getGlobal(frame *callFrame, localIndex uint32) *Global {
+func (vm *vm) getGlobal(frame *callFrame, localIndex uint64) *Global {
 	globalIndex := frame.module.globalAddrs[localIndex]
 	return vm.store.globals[globalIndex]
 }
 
-func (vm *vm) getElement(frame *callFrame, localIndex uint32) *elementSegment {
+func (vm *vm) getElement(frame *callFrame, localIndex uint64) *elementSegment {
 	elementIndex := frame.module.elemAddrs[localIndex]
 	return &vm.store.elements[elementIndex]
 }
 
-func (vm *vm) getData(frame *callFrame, localIndex uint32) *dataSegment {
+func (vm *vm) getData(frame *callFrame, localIndex uint64) *dataSegment {
 	dataIndex := frame.module.dataAddrs[localIndex]
 	return &vm.store.datas[dataIndex]
 }
