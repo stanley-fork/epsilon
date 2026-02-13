@@ -162,7 +162,7 @@ func (vm *vm) instantiate(
 	}
 
 	for _, global := range module.globalVariables {
-		val, err := vm.invokeInitExpression(
+		val, err := vm.invokeExpression(
 			global.initExpression,
 			global.globalType.ValueType,
 			moduleInstance,
@@ -1806,7 +1806,7 @@ func (vm *vm) initActiveElements(
 		}
 
 		expression := element.offsetExpression
-		offsetVal, err := vm.invokeInitExpression(expression, I32, moduleInstance)
+		offsetVal, err := vm.invokeExpression(expression, I32, moduleInstance)
 		if err != nil {
 			return err
 		}
@@ -1831,7 +1831,7 @@ func (vm *vm) initActiveElements(
 
 		values := make([]int32, len(element.functionIndexesExpressions))
 		for i, expr := range element.functionIndexesExpressions {
-			refVal, err := vm.invokeInitExpression(expr, element.kind, moduleInstance)
+			refVal, err := vm.invokeExpression(expr, element.kind, moduleInstance)
 			if err != nil {
 				return err
 			}
@@ -1855,7 +1855,7 @@ func (vm *vm) initActiveDatas(
 		}
 
 		expression := segment.offsetExpression
-		offsetVal, err := vm.invokeInitExpression(expression, I32, moduleInstance)
+		offsetVal, err := vm.invokeExpression(expression, I32, moduleInstance)
 		if err != nil {
 			return err
 		}
@@ -1916,7 +1916,7 @@ func (vm *vm) invokeHostFunction(fun *hostFunction) (err error) {
 	return err
 }
 
-func (vm *vm) invokeInitExpression(
+func (vm *vm) invokeExpression(
 	expression []uint64,
 	resultType ValueType,
 	moduleInstance *ModuleInstance,
