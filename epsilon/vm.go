@@ -1325,15 +1325,15 @@ func (vm *vm) handleBrIf(frame *callFrame) {
 }
 
 func (vm *vm) handleBrTable(frame *callFrame) {
-	size := frame.next()
-	index := vm.stack.popInt32()
+	size := uint32(frame.next())
+	index := uint32(vm.stack.popInt32())
 	var targetLabel uint32
-	if index >= 0 && uint64(index) < size {
-		targetLabel = uint32(frame.function.body[frame.pc+uint32(index)])
+	if index >= 0 && index < size {
+		targetLabel = uint32(frame.function.body[frame.pc+index])
 	} else {
-		targetLabel = uint32(frame.function.body[frame.pc+uint32(size)])
+		targetLabel = uint32(frame.function.body[frame.pc+size])
 	}
-	frame.pc += uint32(size) + 1
+	frame.pc += size + 1
 	vm.brToLabel(frame, targetLabel)
 }
 
@@ -1365,8 +1365,7 @@ func (vm *vm) handleCall(frame *callFrame) error {
 
 func (vm *vm) handleCallIndirect(frame *callFrame) error {
 	expectedType := frame.module.types[frame.next()]
-	tableIndex := frame.next()
-	table := vm.getTable(frame, tableIndex)
+	table := vm.getTable(frame, frame.next())
 
 	elementIndex := vm.stack.popInt32()
 
@@ -1378,7 +1377,7 @@ func (vm *vm) handleCallIndirect(frame *callFrame) error {
 		return fmt.Errorf("uninitialized element %d", elementIndex)
 	}
 
-	function := vm.store.funcs[uint32(tableElement)]
+	function := vm.store.funcs[tableElement]
 	if !function.GetType().Equal(expectedType) {
 		return errIndirectCallTypeMismatch
 	}
@@ -1400,20 +1399,17 @@ func (vm *vm) handleSelect() {
 }
 
 func (vm *vm) handleGlobalGet(frame *callFrame) {
-	localIndex := frame.next()
-	global := vm.getGlobal(frame, localIndex)
+	global := vm.getGlobal(frame, frame.next())
 	vm.stack.push(global.value)
 }
 
 func (vm *vm) handleGlobalSet(frame *callFrame) {
-	localIndex := frame.next()
-	global := vm.getGlobal(frame, localIndex)
+	global := vm.getGlobal(frame, frame.next())
 	global.value = vm.stack.pop()
 }
 
 func (vm *vm) handleTableGet(frame *callFrame) error {
-	tableIndex := frame.next()
-	table := vm.getTable(frame, tableIndex)
+	table := vm.getTable(frame, frame.next())
 	index := vm.stack.popInt32()
 
 	element, err := table.Get(index)
@@ -1426,8 +1422,7 @@ func (vm *vm) handleTableGet(frame *callFrame) error {
 }
 
 func (vm *vm) handleTableSet(frame *callFrame) error {
-	tableIndex := frame.next()
-	table := vm.getTable(frame, tableIndex)
+	table := vm.getTable(frame, frame.next())
 	reference := vm.stack.popInt32()
 	index := vm.stack.popInt32()
 	return table.Set(index, reference)
@@ -1446,8 +1441,7 @@ func (vm *vm) handleMemoryGrow(frame *callFrame) {
 }
 
 func (vm *vm) handleRefFunc(frame *callFrame) {
-	funcIndex := uint32(frame.next())
-	storeIndex := frame.module.funcAddrs[funcIndex]
+	storeIndex := frame.module.funcAddrs[frame.next()]
 	vm.stack.pushInt32(int32(storeIndex))
 }
 
@@ -1820,7 +1814,7 @@ func (vm *vm) initActiveElements(
 
 		storeTableIndex := moduleInstance.tableAddrs[element.tableIndex]
 		table := vm.store.tables[storeTableIndex]
-		if offset > int32(table.Size()) {
+		if offset > table.Size() {
 			return errTableOutOfBounds
 		}
 
@@ -1831,23 +1825,21 @@ func (vm *vm) initActiveElements(
 			}
 		}
 
-		if len(element.functionIndexesExpressions) > 0 {
-			values := make([]int32, len(element.functionIndexesExpressions))
-			for i, expr := range element.functionIndexesExpressions {
-				refVal, err := vm.invokeInitExpression(
-					expr,
-					element.kind,
-					moduleInstance,
-				)
-				if err != nil {
-					return err
-				}
-				values[i] = refVal.int32()
-			}
+		if len(element.functionIndexesExpressions) == 0 {
+			continue
+		}
 
-			if err := table.InitFromSlice(offset, values); err != nil {
+		values := make([]int32, len(element.functionIndexesExpressions))
+		for i, expr := range element.functionIndexesExpressions {
+			refVal, err := vm.invokeInitExpression(expr, element.kind, moduleInstance)
+			if err != nil {
 				return err
 			}
+			values[i] = refVal.int32()
+		}
+
+		if err := table.InitFromSlice(offset, values); err != nil {
+			return err
 		}
 	}
 	return nil
