@@ -166,6 +166,7 @@ func (m *ModuleInstance) findExport(name string) (any, error) {
 
 type FunctionInstance interface {
 	GetType() *FunctionType
+	owner() *vm
 }
 
 // wasmFunction is the runtime representation of a function defined in WASM.
@@ -176,6 +177,7 @@ type wasmFunction struct {
 }
 
 func (wf *wasmFunction) GetType() *FunctionType { return &wf.functionType }
+func (wf *wasmFunction) owner() *vm             { return wf.module.vm }
 
 // hostFunction represents a function defined by the host environment.
 type hostFunction struct {
@@ -185,14 +187,4 @@ type hostFunction struct {
 }
 
 func (hf *hostFunction) GetType() *FunctionType { return &hf.functionType }
-
-// Global is a global variable.
-type Global struct {
-	value   value
-	Mutable bool
-	Type    ValueType
-}
-
-func (g *Global) Get() any {
-	return g.value.any(g.Type)
-}
+func (hf *hostFunction) owner() *vm             { return hf.module.vm }

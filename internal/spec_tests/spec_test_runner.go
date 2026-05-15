@@ -34,23 +34,24 @@ type specTestRunner struct {
 	runtime            *epsilon.Runtime
 	moduleInstanceMap  map[string]*epsilon.ModuleInstance
 	lastModuleInstance *epsilon.ModuleInstance
-	spectestImports    map[string]map[string]any
+	spectestImports    *epsilon.ModuleImports
 }
 
 func newSpecRunner(t *testing.T, wasmDict map[string][]byte) *specTestRunner {
 	importMemoryLimitMax := uint32(2)
 	tableLimitMax := uint32(20)
 
-	spectestImports := epsilon.NewModuleImportBuilder("spectest").
-		AddGlobal("global_i32", int32(666), false, epsilon.I32).
-		AddGlobal("global_i64", int64(666), false, epsilon.I64).
-		AddGlobal("global_f32", float32(666.6), false, epsilon.F32).
-		AddGlobal("global_f64", float64(666.6), false, epsilon.F64).
-		AddTable("table", epsilon.NewTable(epsilon.TableType{
+	runtime := epsilon.NewRuntime()
+	spectestImports := epsilon.NewModuleImports("spectest").
+		AddGlobal("global_i32", runtime.NewGlobalI32(666, false)).
+		AddGlobal("global_i64", runtime.NewGlobalI64(666, false)).
+		AddGlobal("global_f32", runtime.NewGlobalF32(666.6, false)).
+		AddGlobal("global_f64", runtime.NewGlobalF64(666.6, false)).
+		AddTable("table", runtime.NewTable(epsilon.TableType{
 			Limits:        epsilon.Limits{Min: 10, Max: &tableLimitMax},
 			ReferenceType: epsilon.FuncRefType,
 		})).
-		AddMemory("memory", epsilon.NewMemory(
+		AddMemory("memory", runtime.NewMemory(
 			epsilon.MemoryType{
 				Limits: epsilon.Limits{Min: 1, Max: &importMemoryLimitMax},
 			},
@@ -107,13 +108,12 @@ func newSpecRunner(t *testing.T, wasmDict map[string][]byte) *specTestRunner {
 		AddHostFunc("print", func(m *epsilon.ModuleInstance, args ...any) []any {
 			fmt.Printf("Print called!")
 			return nil
-		}).
-		Build()
+		})
 
 	return &specTestRunner{
 		t:                 t,
 		wasmDict:          wasmDict,
-		runtime:           epsilon.NewRuntime(),
+		runtime:           runtime,
 		moduleInstanceMap: make(map[string]*epsilon.ModuleInstance),
 		spectestImports:   spectestImports,
 	}
@@ -167,12 +167,11 @@ func (r *specTestRunner) handleRegister(cmd wabt.Command) {
 	r.moduleInstanceMap[cmd.As] = r.lastModuleInstance
 }
 
-func (r *specTestRunner) buildImports() []map[string]map[string]any {
-	imports := []map[string]map[string]any{r.spectestImports}
+func (r *specTestRunner) buildImports() []*epsilon.ModuleImports {
+	imports := []*epsilon.ModuleImports{r.spectestImports}
 	for regName, moduleInstance := range r.moduleInstanceMap {
-		moduleImport := epsilon.NewModuleImportBuilder(regName).
-			AddModuleExports(moduleInstance).
-			Build()
+		moduleImport := epsilon.NewModuleImports(regName).
+			AddModuleExports(moduleInstance)
 		imports = append(imports, moduleImport)
 	}
 	return imports

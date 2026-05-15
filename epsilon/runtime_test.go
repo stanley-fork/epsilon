@@ -55,13 +55,12 @@ func TestRuntimeImportedFunction(t *testing.T) {
 			call $multiply)
 	)`)
 
-	imports := NewModuleImportBuilder("env").
+	imports := NewModuleImports("env").
 		AddHostFunc("multiply", func(module *ModuleInstance, args ...any) []any {
 			a := args[0].(int32)
 			b := args[1].(int32)
 			return []any{a * b}
-		}).
-		Build()
+		})
 
 	instance, err := NewRuntime().
 		InstantiateModuleWithImports(bytes.NewReader(wasm), imports)
@@ -89,18 +88,17 @@ func TestRuntimeImportedMemory(t *testing.T) {
 			i32.load)
 	)`)
 
-	memory := NewMemory(MemoryType{Limits: Limits{Min: 1}})
+	runtime := NewRuntime()
+	memory := runtime.NewMemory(MemoryType{Limits: Limits{Min: 1}})
 	testData := binary.LittleEndian.AppendUint32(nil, 42)
 	err := memory.Set(0, 100, testData)
 	if err != nil {
 		t.Fatalf("failed to set memory: %v", err)
 	}
 
-	imports := NewModuleImportBuilder("env").
-		AddMemory("memory", memory).
-		Build()
+	imports := NewModuleImports("env").AddMemory("memory", memory)
 
-	instance, err := NewRuntime().
+	instance, err := runtime.
 		InstantiateModuleWithImports(bytes.NewReader(wasm), imports)
 	if err != nil {
 		t.Fatalf("failed to instantiate module: %v", err)
@@ -140,11 +138,11 @@ func TestRuntimeImportedGlobal(t *testing.T) {
 			i32.add)
 	)`)
 
-	imports := NewModuleImportBuilder("env").
-		AddGlobal("offset", int32(100), false, I32).
-		Build()
+	runtime := NewRuntime()
+	imports := NewModuleImports("env").
+		AddGlobal("offset", runtime.NewGlobal(int32(100), false, I32))
 
-	instance, err := NewRuntime().
+	instance, err := runtime.
 		InstantiateModuleWithImports(bytes.NewReader(wasm), imports)
 	if err != nil {
 		t.Fatalf("failed to instantiate module: %v", err)
@@ -180,18 +178,18 @@ func TestRuntimeImportedFunctionsInTable(t *testing.T) {
 			call_indirect (type $op))
 	)`)
 
-	imports := NewModuleImportBuilder("env").
+	runtime := NewRuntime()
+	imports := NewModuleImports("env").
 		AddHostFunc("host_sub", func(module *ModuleInstance, args ...any) []any {
 			x := args[0].(int32)
 			return []any{x - 1}
 		}).
-		AddTable("table", NewTable(TableType{
+		AddTable("table", runtime.NewTable(TableType{
 			ReferenceType: FuncRefType,
 			Limits:        Limits{Min: 2},
-		})).
-		Build()
+		}))
 
-	instance, err := NewRuntime().
+	instance, err := runtime.
 		InstantiateModuleWithImports(bytes.NewReader(wasm), imports)
 	if err != nil {
 		t.Fatalf("failed to instantiate module: %v", err)
@@ -244,7 +242,7 @@ func TestRuntimeModuleToModuleImport(t *testing.T) {
 
 	module2, err := runtime.InstantiateModuleWithImports(
 		bytes.NewReader(module2Wasm),
-		NewModuleImportBuilder("math").AddModuleExports(module1).Build(),
+		NewModuleImports("math").AddModuleExports(module1),
 	)
 	if err != nil {
 		t.Fatalf("failed to instantiate module2: %v", err)
@@ -344,9 +342,8 @@ func TestRuntimeConfusion(t *testing.T) {
 		(func (export "exploit") (result i32) call $wrapper)
 	)`)
 
-	imports := NewModuleImportBuilder("env").
-		AddModuleExports(modA).
-		Build()
+	imports := NewModuleImports("env").
+		AddModuleExports(modA)
 
 	_, err = r2.InstantiateModuleWithImports(bytes.NewReader(wasmC), imports)
 	if err == nil {
@@ -354,8 +351,68 @@ func TestRuntimeConfusion(t *testing.T) {
 			"cross-runtime function import")
 	}
 
-	expectedErrMsg := "cross-runtime function import of env.wrapper is forbidden"
+	expectedErrMsg := "cross-runtime import of env.wrapper is forbidden"
 	if err.Error() != expectedErrMsg {
 		t.Fatalf("expected error %q, got %q", expectedErrMsg, err.Error())
+	}
+}
+
+func TestCrossRuntimeMemorySharingIsForbidden(t *testing.T) {
+	r1 := NewRuntime()
+	r2 := NewRuntime()
+
+	mem := r1.NewMemory(MemoryType{Limits: Limits{Min: 1}})
+
+	wasm, _ := wabt.Wat2Wasm(`(module
+		(import "env" "memory" (memory 1))
+	)`)
+
+	imports := NewModuleImports("env").
+		AddMemory("memory", mem)
+
+	_, err := r2.InstantiateModuleWithImports(bytes.NewReader(wasm), imports)
+	if err == nil {
+		t.Fatal("expected error when sharing memory across runtimes")
+	}
+}
+
+func TestCrossRuntimeTableSharingIsForbidden(t *testing.T) {
+	r1 := NewRuntime()
+	r2 := NewRuntime()
+
+	table := r1.NewTable(TableType{
+		ReferenceType: FuncRefType,
+		Limits:        Limits{Min: 1},
+	})
+
+	wasm, _ := wabt.Wat2Wasm(`(module
+		(import "env" "table" (table 1 funcref))
+	)`)
+
+	imports := NewModuleImports("env").
+		AddTable("table", table)
+
+	_, err := r2.InstantiateModuleWithImports(bytes.NewReader(wasm), imports)
+	if err == nil {
+		t.Fatal("expected error when sharing table across runtimes")
+	}
+}
+
+func TestCrossRuntimeGlobalSharingIsForbidden(t *testing.T) {
+	r1 := NewRuntime()
+	r2 := NewRuntime()
+
+	global := r1.NewGlobalI32(42, false)
+
+	wasm, _ := wabt.Wat2Wasm(`(module
+		(import "env" "global" (global i32))
+	)`)
+
+	imports := NewModuleImports("env").
+		AddGlobal("global", global)
+
+	_, err := r2.InstantiateModuleWithImports(bytes.NewReader(wasm), imports)
+	if err == nil {
+		t.Fatal("expected error when sharing global across runtimes")
 	}
 }

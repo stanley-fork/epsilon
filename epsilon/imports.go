@@ -50,19 +50,19 @@ func resolveImports(
 			}
 			functions = append(functions, function)
 		case GlobalType:
-			global, err := resolveGlobalImport(obj, t, imp)
+			global, err := resolveGlobalImport(instance, obj, t, imp)
 			if err != nil {
 				return nil, err
 			}
 			globals = append(globals, global)
 		case MemoryType:
-			memory, err := resolveMemoryImport(obj, t, imp)
+			memory, err := resolveMemoryImport(instance, obj, t, imp)
 			if err != nil {
 				return nil, err
 			}
 			memories = append(memories, memory)
 		case TableType:
-			table, err := resolveTableImport(obj, t, imp)
+			table, err := resolveTableImport(instance, obj, t, imp)
 			if err != nil {
 				return nil, err
 			}
@@ -96,22 +96,16 @@ func resolveFunctionImport(
 	imp moduleImport,
 ) (FunctionInstance, error) {
 	if f, ok := obj.(FunctionInstance); ok {
+		if f.owner() != moduleInstance.vm {
+			return nil, fmt.Errorf(
+				"cross-runtime import of %s.%s is forbidden", imp.moduleName, imp.name,
+			)
+		}
+
 		if !f.GetType().Equal(functionType) {
 			return nil, fmt.Errorf(
 				"type mismatch for %s.%s", imp.moduleName, imp.name,
 			)
-		}
-
-		// Prevent cross-runtime function sharing. The WebAssembly spec assumes a
-		// single Store per abstract machine. Mixing objects across Runtimes breaks
-		// isolation and is forbidden.
-		if wasmFn, isWasm := f.(*wasmFunction); isWasm {
-			if wasmFn.module.vm != moduleInstance.vm {
-				return nil, fmt.Errorf(
-					"cross-runtime function import of %s.%s is forbidden",
-					imp.moduleName, imp.name,
-				)
-			}
 		}
 
 		return f, nil
@@ -129,37 +123,37 @@ func resolveFunctionImport(
 }
 
 func resolveGlobalImport(
+	instance *ModuleInstance,
 	obj any,
 	globalType GlobalType,
 	imp moduleImport,
 ) (*Global, error) {
-	if global, ok := obj.(*Global); ok {
-		if global.Mutable != globalType.IsMutable {
-			return nil, fmt.Errorf(
-				"mutability mismatch for %s.%s", imp.moduleName, imp.name,
-			)
-		}
-		if global.Type != nil && global.Type != globalType.ValueType {
-			return nil, fmt.Errorf(
-				"value type mismatch for %s.%s", imp.moduleName, imp.name,
-			)
-		}
-		return global, nil
+	global, ok := obj.(*Global)
+	if !ok {
+		return nil, fmt.Errorf("%s.%s not a global", imp.moduleName, imp.name)
 	}
 
-	if !valueMatchesType(obj, globalType.ValueType) {
+	if global.owner != instance.vm {
+		return nil, fmt.Errorf(
+			"cross-runtime import of %s.%s is forbidden", imp.moduleName, imp.name,
+		)
+	}
+
+	if global.Mutable != globalType.IsMutable {
+		return nil, fmt.Errorf(
+			"mutability mismatch for %s.%s", imp.moduleName, imp.name,
+		)
+	}
+	if global.Type != nil && global.Type != globalType.ValueType {
 		return nil, fmt.Errorf(
 			"value type mismatch for %s.%s", imp.moduleName, imp.name,
 		)
 	}
-	return &Global{
-		value:   newValue(obj),
-		Mutable: globalType.IsMutable,
-		Type:    globalType.ValueType,
-	}, nil
+	return global, nil
 }
 
 func resolveMemoryImport(
+	instance *ModuleInstance,
 	obj any,
 	memoryType MemoryType,
 	imp moduleImport,
@@ -167,6 +161,12 @@ func resolveMemoryImport(
 	memory, ok := obj.(*Memory)
 	if !ok {
 		return nil, fmt.Errorf("%s.%s not a memory", imp.moduleName, imp.name)
+	}
+
+	if memory.owner != instance.vm {
+		return nil, fmt.Errorf(
+			"cross-runtime import of %s.%s is forbidden", imp.moduleName, imp.name,
+		)
 	}
 
 	provided := Limits{Min: uint32(memory.Size()), Max: memory.Limits.Max}
@@ -177,6 +177,7 @@ func resolveMemoryImport(
 }
 
 func resolveTableImport(
+	instance *ModuleInstance,
 	obj any,
 	tableType TableType,
 	imp moduleImport,
@@ -184,6 +185,12 @@ func resolveTableImport(
 	table, ok := obj.(*Table)
 	if !ok {
 		return nil, fmt.Errorf("%s.%s not a table", imp.moduleName, imp.name)
+	}
+
+	if table.owner != instance.vm {
+		return nil, fmt.Errorf(
+			"cross-runtime import of %s.%s is forbidden", imp.moduleName, imp.name,
+		)
 	}
 
 	if table.Type.ReferenceType != tableType.ReferenceType {
@@ -199,28 +206,6 @@ func resolveTableImport(
 		)
 	}
 	return table, nil
-}
-
-func valueMatchesType(val any, valueType ValueType) bool {
-	switch valueType {
-	case I32:
-		_, ok := val.(int32)
-		return ok
-	case I64:
-		_, ok := val.(int64)
-		return ok
-	case F32:
-		_, ok := val.(float32)
-		return ok
-	case F64:
-		_, ok := val.(float64)
-		return ok
-	case V128:
-		_, ok := val.(V128Value)
-		return ok
-	default:
-		return false
-	}
 }
 
 func limitsMatch(provided, required Limits) bool {
