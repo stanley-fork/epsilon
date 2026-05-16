@@ -52,6 +52,13 @@ const (
 	sixthBitMask         = uint64(1 << 6)
 )
 
+// initialVectorCapacity caps the up-front allocation parseVector and similar
+// callers perform from an attacker-controlled count. Real modules rarely
+// exceed a few thousand items per vector, so this is the common-case exact
+// size; pathological counts grow via append+EOF instead of OOMing on a
+// pre-allocation.
+const initialVectorCapacity = 4096
+
 // sectionId represents the different sections of a WebAssembly module.
 // See https://webassembly.github.io/spec/core/binary/modules.html#sections
 type sectionId byte
@@ -259,11 +266,13 @@ func (p *parser) parseCustomSection(payloadLen uint32) error {
 		return errIntegerTooLarge
 	}
 
-	nameBytes := make([]byte, nameLength)
-	if _, err := io.ReadFull(p.reader, nameBytes); err != nil {
+	nameBytes := bytes.NewBuffer(
+		make([]byte, 0, min(nameLength, initialVectorCapacity)),
+	)
+	if _, err := io.CopyN(nameBytes, p.reader, int64(nameLength)); err != nil {
 		return err
 	}
-	if !utf8.Valid(nameBytes) {
+	if !utf8.Valid(nameBytes.Bytes()) {
 		return errInvalidUTF8
 	}
 
@@ -299,7 +308,7 @@ func (p *parser) parseFunction() (function, error) {
 		return function{}, fmt.Errorf("too many locals: %d", totalLocalsCount)
 	}
 
-	locals := make([]ValueType, 0, totalLocalsCount)
+	locals := make([]ValueType, 0, min(totalLocalsCount, initialVectorCapacity))
 	for _, entry := range localEntries {
 		for i := uint64(0); i < entry.count; i++ {
 			locals = append(locals, entry.typ)
@@ -759,13 +768,13 @@ func parseVector[T any](parser *parser, parse func() (T, error)) ([]T, error) {
 	if err != nil {
 		return nil, err
 	}
-	items := make([]T, count)
-	for i := 0; i < int(count); i++ {
+	items := make([]T, 0, min(count, initialVectorCapacity))
+	for i := uint32(0); i < count; i++ {
 		parsed, err := parse()
 		if err != nil {
 			return nil, err
 		}
-		items[i] = parsed
+		items = append(items, parsed)
 	}
 	return items, nil
 }
@@ -791,11 +800,11 @@ func (p *parser) parseUtf8String() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	buf := make([]byte, length)
-	if _, err := io.ReadFull(p.reader, buf); err != nil {
+	buf := bytes.NewBuffer(make([]byte, 0, min(length, initialVectorCapacity)))
+	if _, err := io.CopyN(buf, p.reader, int64(length)); err != nil {
 		return "", fmt.Errorf("failed to read string bytes: %w", err)
 	}
-	return string(buf), nil
+	return buf.String(), nil
 }
 
 func uint64SliceToInt32(slice []uint64) []int32 {
@@ -1147,13 +1156,13 @@ func (p *parser) readImmediateVector() ([]uint64, error) {
 		return nil, err
 	}
 
-	immediates := make([]uint64, size)
-	for i := range size {
+	immediates := make([]uint64, 0, min(size, initialVectorCapacity))
+	for range size {
 		val, err := p.readUint32()
 		if err != nil {
 			return nil, err
 		}
-		immediates[i] = val
+		immediates = append(immediates, val)
 	}
 	return immediates, nil
 }
