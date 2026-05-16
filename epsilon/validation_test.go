@@ -102,6 +102,37 @@ func TestVuln06(t *testing.T) {
 	}
 }
 
+func TestNonCanonicalBlockType(t *testing.T) {
+	// Block type is decoded as s33 SLEB128. The valid negative encodings are
+	// exactly the valtype codes (-1..-5, -16, -17) and -64 (empty). The bytes
+	// 0xff 0x7e are a canonical 2-byte SLEB128 of -129, which is not a legal
+	// block type and must be rejected; an earlier implementation masked it with
+	// 0x7f and silently treated it as i32.
+	wasm := []byte{
+		0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00,
+		0x01, 0x04, 0x01, 0x60, 0x00, 0x00, // type () -> ()
+		0x03, 0x02, 0x01, 0x00, // 1 function of type 0
+		0x0a, 0x0b, 0x01,
+		0x09,             // body size
+		0x00,             // local count
+		0x02, 0xff, 0x7e, // block, blocktype = SLEB128(-129)
+		0x41, 0x00, // i32.const 0
+		0x0b, // end of block
+		0x1a, // drop
+		0x0b, // end of function
+	}
+
+	module, err := newParser(bytes.NewReader(wasm)).parse()
+	if err != nil {
+		t.Fatalf("failed to parse module: %v", err)
+	}
+
+	err = newValidator(Config{}).validateModule(module)
+	if err == nil {
+		t.Fatalf("expected validation error for non-canonical block type, got nil")
+	}
+}
+
 func TestMemoryIndexValidation(t *testing.T) {
 	wasm := []byte{
 		0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, // header

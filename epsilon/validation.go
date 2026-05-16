@@ -1507,23 +1507,30 @@ func (v *validator) markFrameUnreachable() error {
 func (v *validator) getBlockTypes(
 	blockType int32,
 ) ([]ValueType, []ValueType, error) {
-	if blockType == -0x40 { // empty block type.
+	switch blockType {
+	case -0x40:
 		return []ValueType{}, []ValueType{}, nil
-	}
-
-	if blockType >= 0 {
-		if blockType >= int32(len(v.typeDefs)) {
+	case -0x01:
+		return []ValueType{}, []ValueType{I32}, nil
+	case -0x02:
+		return []ValueType{}, []ValueType{I64}, nil
+	case -0x03:
+		return []ValueType{}, []ValueType{F32}, nil
+	case -0x04:
+		return []ValueType{}, []ValueType{F64}, nil
+	case -0x05:
+		return []ValueType{}, []ValueType{V128}, nil
+	case -0x10:
+		return []ValueType{}, []ValueType{FuncRefType}, nil
+	case -0x11:
+		return []ValueType{}, []ValueType{ExternRefType}, nil
+	default:
+		if blockType < 0 || blockType >= int32(len(v.typeDefs)) {
 			return nil, nil, errInvalidBlockType
 		}
 		funcType := v.typeDefs[blockType]
 		return funcType.ParamTypes, funcType.ResultTypes, nil
 	}
-
-	vt := toValueType(uint64(blockType & 0x7F))
-	if vt == bottom {
-		return nil, nil, errInvalidBlockType
-	}
-	return []ValueType{}, []ValueType{vt}, nil
 }
 
 func toValueType(code uint64) ValueType {
