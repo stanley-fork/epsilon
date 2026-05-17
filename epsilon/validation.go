@@ -17,7 +17,6 @@ package epsilon
 import (
 	"errors"
 	"fmt"
-	"math"
 )
 
 var (
@@ -145,14 +144,16 @@ func (v *validator) validateModule(module *moduleDefinition) error {
 	}
 
 	for _, table := range module.tables {
-		if err := validateLimits(table.Limits, math.MaxUint32); err != nil {
+		err := validateLimits(table.Limits, v.config.MaxTableElements)
+		if err != nil {
 			return err
 		}
 		v.tableTypes = append(v.tableTypes, table)
 	}
 
 	for _, memoryType := range module.memories {
-		if err := validateLimits(memoryType.Limits, uint32(1)<<16); err != nil {
+		err := validateLimits(memoryType.Limits, v.config.MaxMemoryPages)
+		if err != nil {
 			return err
 		}
 		v.memTypes = append(v.memTypes, memoryType)

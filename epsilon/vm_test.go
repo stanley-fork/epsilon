@@ -31,15 +31,16 @@ func instantiate(
 	if err != nil {
 		return nil, err
 	}
-	module, err := newParser(bytes.NewReader(wasm)).parse()
-	if err != nil {
-		return nil, err
-	}
 
 	cfg := DefaultConfig()
 	if config != nil {
 		cfg = *config
 	}
+	module, err := newParser(bytes.NewReader(wasm), cfg).parse()
+	if err != nil {
+		return nil, err
+	}
+
 	vm := newVm(cfg)
 
 	return vm.instantiate(module, imports)
@@ -882,8 +883,11 @@ func TestInstantiateMultipleMemories(t *testing.T) {
 		(data (memory $mem1) (i32.const 0) "world")
 	)`
 	config := &Config{
-		MaxCallStackDepth:            1000,
-		CallStackPreallocationSize:   1000,
+		MaxCallStackDepth:            DefaultMaxCallStackDepth,
+		CallStackPreallocationSize:   DefaultCallStackPreallocationSize,
+		MaxTableElements:             DefaultMaxTableElements,
+		MaxMemoryPages:               DefaultMaxMemoryPages,
+		MaxLocalsPerFunction:         DefaultMaxLocalsPerFunction,
 		ExperimentalMultipleMemories: true,
 	}
 	moduleInstance, err := instantiate(wat, nil, config)
@@ -932,8 +936,11 @@ func TestStoreLoadMultipleMemories(t *testing.T) {
 		)
 	)`
 	config := &Config{
-		MaxCallStackDepth:            1000,
-		CallStackPreallocationSize:   1000,
+		MaxCallStackDepth:            DefaultMaxCallStackDepth,
+		CallStackPreallocationSize:   DefaultCallStackPreallocationSize,
+		MaxTableElements:             DefaultMaxTableElements,
+		MaxMemoryPages:               DefaultMaxMemoryPages,
+		MaxLocalsPerFunction:         DefaultMaxLocalsPerFunction,
 		ExperimentalMultipleMemories: true,
 	}
 	moduleInstance, err := instantiate(wat, nil, config)
@@ -974,8 +981,11 @@ func TestV128StoreLoadMultipleMemories(t *testing.T) {
 		)
 	)`
 	config := &Config{
-		MaxCallStackDepth:            1000,
-		CallStackPreallocationSize:   1000,
+		MaxCallStackDepth:            DefaultMaxCallStackDepth,
+		CallStackPreallocationSize:   DefaultCallStackPreallocationSize,
+		MaxTableElements:             DefaultMaxTableElements,
+		MaxMemoryPages:               DefaultMaxMemoryPages,
+		MaxLocalsPerFunction:         DefaultMaxLocalsPerFunction,
 		ExperimentalMultipleMemories: true,
 	}
 	moduleInstance, err := instantiate(wat, nil, config)
@@ -1013,8 +1023,11 @@ func TestMemoryInitCopyMultipleMemories(t *testing.T) {
 		)
 	)`
 	config := &Config{
-		MaxCallStackDepth:            1000,
-		CallStackPreallocationSize:   1000,
+		MaxCallStackDepth:            DefaultMaxCallStackDepth,
+		CallStackPreallocationSize:   DefaultCallStackPreallocationSize,
+		MaxTableElements:             DefaultMaxTableElements,
+		MaxMemoryPages:               DefaultMaxMemoryPages,
+		MaxLocalsPerFunction:         DefaultMaxLocalsPerFunction,
 		ExperimentalMultipleMemories: true,
 	}
 	moduleInstance, err := instantiate(wat, nil, config)
