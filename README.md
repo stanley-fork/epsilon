@@ -86,13 +86,7 @@ instance, _ := epsilon.NewRuntime().
 
 ```text
 Usage:
-  epsilon [options] <module>
-  epsilon [options] <module> <function> [args...]
-
-Arguments:
-  <module>      Path or URL to a WebAssembly module
-  <function>    Name of the exported function to invoke
-  [args...]     Arguments to pass to the function
+  epsilon [options] <module> [function] [args...]
 
 Options:
   -arg value
@@ -107,8 +101,8 @@ Options:
         print version and exit
 
 Examples:
-  epsilon module.wasm                     Run a WASI module
-  epsilon module.wasm add 5 10            Invoke a function
+  epsilon module.wasm                     Run module.wasm
+  epsilon module.wasm add 5 10            Call add(5, 10)
   epsilon -fuel 1000000 module.wasm       Run with 1M instruction fuel
   epsilon -dir /host=/guest module.wasm   Mount /host as /guest
 ```
@@ -130,20 +124,20 @@ Usage: make <target>
 Targets:
   help                  Show this help
   build                 Compile all Go packages
-  build-all             Cross-compile the CLI for Darwin and Windows (mirrors CI)
-  test                  Run all Go tests (unit + spec)
+  build-all             Cross-compile the CLI for Linux, Darwin, and Windows
   run-example           Run the basic example (smoke check)
   fmt                   Run gofmt across the tree
   vet                   Run go vet across the tree
   clean                 Remove built artifacts (keeps the wasi-sdk toolchain)
   distclean             Remove built artifacts AND the wasi-sdk toolchain
+  test                  Run all Go tests (unit + spec)
   test-spec             Run wasm spec tests
   test-wasi             Run the WASI testsuite (needs uv)
   test-all              Run all tests (Go tests + WASI spec tests)
   bench                 Run benchmarks (vars: BENCH_PATTERN, etc.)
   bench-compare         Compare benchmarks across refs; TARGET=<ref> required
-  build-wasm            Rebuild benchmark .wasm files (auto-installs wasi-sdk)
-  setup-wasi-sdk        Install wasi-sdk locally (~600 MB, one-time)
+  build-wasm            Rebuild benchmark .wasm files
+  setup-wasi-sdk        Install wasi-sdk locally
   setup-wabt            Install WABT locally (one-time)
 
 Common overrides:
