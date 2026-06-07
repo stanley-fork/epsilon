@@ -135,6 +135,9 @@ adherence to project standards.
     **Documentation**:
     - Ensure `README.md` and other documentation is updated if new features,
       flags, or configuration options were added.
+    - Ensure `AGENTS.md` is still accurate after the change: if the diff alters
+      the project layout, build/test commands, conventions, or constraints it
+      documents, it must be updated to match.
 
     **Modern Go Features**:
     - Opportunities to use newer Go features (e.g., generics, improved slices
@@ -142,7 +145,7 @@ adherence to project standards.
     - Deprecated patterns that should be updated.
 
     **Project Standards**:
-    - Adherence to rules in `.rules`.
+    - Adherence to rules in `AGENTS.md`.
     - Consistent style with existing code.
 
 3.  **Compile Findings**: Create a structured report with:
