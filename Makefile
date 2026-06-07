@@ -97,6 +97,12 @@ run-example: ## Run the basic example (smoke check)
 fmt: ## Run gofmt across the tree
 	go fmt ./...
 
+fmt-md: check-uv ## Format repo-owned Markdown
+	git ls-files -z '*.md' ':!:CONTRIBUTING.md' ':!:CLAUDE.md' | \
+		xargs -0 uvx \
+		--with mdformat-gfm==1.0.0 --with mdformat-frontmatter==2.1.2 \
+		mdformat@1.0.0 --wrap 80 --number
+
 vet: ## Run go vet across the tree
 	go vet ./...
 
@@ -120,13 +126,17 @@ test: setup-wabt ## Run all Go tests (unit + spec)
 test-spec: internal/spec_tests/testsuite/.git setup-wabt ## Run wasm spec tests
 	go test ./internal/spec_tests/...
 
-test-wasi: wasip1/wasi-testsuite/.git ## Run the WASI testsuite (needs uv)
+test-wasi: wasip1/wasi-testsuite/.git check-uv ## Run the WASI testsuite
+	uv run --with-requirements requirements.txt wasip1/wasi_testsuite.py
+
+# Internal helper (no ## so it stays out of `make help`): a prerequisite for
+# targets that shell out to uv/uvx.
+check-uv:
 	@command -v uv >/dev/null 2>&1 || { \
 	  echo "Error: 'uv' is not installed." && \
 	  echo "See https://docs.astral.sh/uv/ for instructions." && \
 	  exit 1; \
 	}
-	uv run --with-requirements requirements.txt wasip1/wasi_testsuite.py
 
 test-all: test test-wasi ## Run all tests (Go tests + WASI spec tests)
 
@@ -160,8 +170,8 @@ $(WASM_OUT_DIR):
 
 # $(1) = archive basename, $(2) = URL, $(3) = dest dir,
 # $(4) = directory name inside the extracted tarball.
-# $(strip ...) absorbs whitespace introduced by `\` line continuation at
-# the call site.
+# $(strip ...) absorbs whitespace introduced by `\` line continuation at the
+# call site.
 define install-toolchain
 	$(eval N := $(strip $(1)))
 	$(eval U := $(strip $(2)))
@@ -202,6 +212,6 @@ internal/spec_tests/testsuite/.git wasip1/wasi-testsuite/.git:
 
 # ----- phony declarations -----------------------------------------------------
 
-.PHONY: help build build-all run-example fmt vet clean distclean \
-        test test-spec test-wasi test-all bench bench-compare \
+.PHONY: help build build-all run-example fmt fmt-md check-uv vet clean \
+        distclean test test-spec test-wasi test-all bench bench-compare \
         build-wasm setup-wasi-sdk setup-wabt
