@@ -138,7 +138,7 @@ func TestNonCanonicalBlockType(t *testing.T) {
 func TestMemoryIndexValidation(t *testing.T) {
 	wasm := []byte{
 		0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, // header
-		0x01, 0x05, 0x01, 0x60, 0x00, 0x00, // type section
+		0x01, 0x04, 0x01, 0x60, 0x00, 0x00, // type section
 		0x03, 0x02, 0x01, 0x00, // function section
 		0x05, 0x03, 0x01, 0x00, 0x01, // memory section
 		0x0a, 0x0a, 0x01, 0x08, // code section
@@ -201,6 +201,20 @@ func TestMaxTableElementsRejectsOversizedTableMax(t *testing.T) {
 	}
 }
 
+func TestMaxTableElementsRejectsOversizedImportedTable(t *testing.T) {
+	module, err := getModule(
+		`(module (import "module" "table" (table 1001 funcref)))`,
+	)
+	if err != nil {
+		t.Fatalf("failed to parse module: %v", err)
+	}
+
+	err = newValidator(Config{MaxTableElements: 1000}).validateModule(module)
+	if !errors.Is(err, errInvalidLimits) {
+		t.Fatalf("expected errInvalidLimits, got %v", err)
+	}
+}
+
 func TestMaxMemoryPagesRejectsOversizedMemory(t *testing.T) {
 	module, err := getModule(`(module (memory 101))`)
 	if err != nil {
@@ -232,6 +246,20 @@ func TestMaxMemoryPagesRejectsOversizedMemoryMax(t *testing.T) {
 	err = newValidator(Config{MaxMemoryPages: 300}).validateModule(module)
 	if err != nil {
 		t.Fatalf("expected success with raised limit, got %v", err)
+	}
+}
+
+func TestMaxMemoryPagesRejectsOversizedImportedMemory(t *testing.T) {
+	module, err := getModule(
+		`(module (import "module" "memory" (memory 101)))`,
+	)
+	if err != nil {
+		t.Fatalf("failed to parse module: %v", err)
+	}
+
+	err = newValidator(Config{MaxMemoryPages: 100}).validateModule(module)
+	if !errors.Is(err, errInvalidLimits) {
+		t.Fatalf("expected errInvalidLimits, got %v", err)
 	}
 }
 

@@ -88,7 +88,7 @@ type validator struct {
 	globalTypes         []GlobalType
 	importedTypes       []GlobalType // Only includes imported globals.
 	elemTypes           []ReferenceType
-	dataCount           *uint64
+	dataCount           *uint32
 	referencedFunctions map[uint32]bool
 	config              Config
 	code                []uint64
@@ -127,8 +127,17 @@ func (v *validator) validateModule(module *moduleDefinition) error {
 
 			v.funcTypes = append(v.funcTypes, module.types[t])
 		case TableType:
+			if err := validateLimits(
+				t.Limits,
+				v.config.MaxTableElements,
+			); err != nil {
+				return err
+			}
 			v.tableTypes = append(v.tableTypes, t)
 		case MemoryType:
+			if err := validateLimits(t.Limits, v.config.MaxMemoryPages); err != nil {
+				return err
+			}
 			v.memTypes = append(v.memTypes, t)
 		case GlobalType:
 			v.globalTypes = append(v.globalTypes, t)
@@ -280,11 +289,11 @@ func (v *validator) validateElementSegment(elem *elementSegment) error {
 	}
 
 	for _, funcIndex := range elem.functionIndexes {
-		v.referencedFunctions[uint32(funcIndex)] = true
+		v.referencedFunctions[funcIndex] = true
 		if elem.kind != FuncRefType {
 			return errTypeMismatch
 		}
-		if err := v.validateFunctionTypeExists(uint32(funcIndex)); err != nil {
+		if err := v.validateFunctionTypeExists(funcIndex); err != nil {
 			return err
 		}
 	}
@@ -1047,7 +1056,7 @@ func (v *validator) validateMemoryInit() error {
 		return errDataCountNotSet
 	}
 
-	if dataIndex >= uint32(*v.dataCount) {
+	if dataIndex >= *v.dataCount {
 		return errDataIndexOutOfBounds
 	}
 	if err := v.validateMemoryExists(memoryIndex); err != nil {
@@ -1287,7 +1296,7 @@ func (v *validator) validateDataDrop() error {
 	}
 
 	dataIndex := uint32(v.next())
-	if dataIndex >= uint32(*v.dataCount) {
+	if dataIndex >= *v.dataCount {
 		return errDataIndexOutOfBounds
 	}
 	return nil

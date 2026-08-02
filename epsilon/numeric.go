@@ -27,6 +27,12 @@ var (
 )
 
 const (
+	signMaskF32 = uint32(1) << 31
+	signMaskF64 = uint64(1) << 63
+
+	canonicalNaNF32 = uint32(0x7fc00000)
+	canonicalNaNF64 = uint64(0x7ff8000000000000)
+
 	maxInt32Plus1  = 2147483648.0
 	maxUint32Plus1 = 4294967296.0
 	maxInt64Plus1  = 9223372036854775808.0
@@ -99,8 +105,14 @@ func remU64(a, b int64) (int64, error) {
 	return int64(uint64(a) % uint64(b)), nil
 }
 
-func abs[T wasmFloat](a T) T {
-	return T(math.Abs(float64(a)))
+// absF32 clears the sign bit of a. Widening to float64 would rewrite NaN
+// payloads, which the spec requires these bitwise operators to preserve.
+func absF32(a float32) float32 {
+	return math.Float32frombits(math.Float32bits(a) &^ signMaskF32)
+}
+
+func absF64(a float64) float64 {
+	return math.Float64frombits(math.Float64bits(a) &^ signMaskF64)
 }
 
 func ceil[T wasmFloat](a T) T {
@@ -124,8 +136,73 @@ func sqrt[T wasmFloat](a T) T {
 	return T(math.Sqrt(float64(a)))
 }
 
-func copysign[T wasmFloat](a, b T) T {
-	return T(math.Copysign(float64(a), float64(b)))
+// minF32 returns the wasm minimum of a and b. Go's min propagates an operand
+// NaN unchanged, which leaves a signaling NaN signaling and varies across
+// architectures; the spec requires an arithmetic NaN, and the canonical NaN
+// is one. Go's min also cannot be used for the zeros, where the sign decides
+// the result rather than the comparison.
+func minF32(a, b float32) float32 {
+	if a != a || b != b {
+		return math.Float32frombits(canonicalNaNF32)
+	}
+	if a == 0 && b == 0 {
+		return math.Float32frombits(math.Float32bits(a) | math.Float32bits(b))
+	}
+	if a < b {
+		return a
+	}
+	return b
+}
+
+func maxF32(a, b float32) float32 {
+	if a != a || b != b {
+		return math.Float32frombits(canonicalNaNF32)
+	}
+	if a == 0 && b == 0 {
+		return math.Float32frombits(math.Float32bits(a) & math.Float32bits(b))
+	}
+	if a > b {
+		return a
+	}
+	return b
+}
+
+func minF64(a, b float64) float64 {
+	if a != a || b != b {
+		return math.Float64frombits(canonicalNaNF64)
+	}
+	if a == 0 && b == 0 {
+		return math.Float64frombits(math.Float64bits(a) | math.Float64bits(b))
+	}
+	if a < b {
+		return a
+	}
+	return b
+}
+
+func maxF64(a, b float64) float64 {
+	if a != a || b != b {
+		return math.Float64frombits(canonicalNaNF64)
+	}
+	if a == 0 && b == 0 {
+		return math.Float64frombits(math.Float64bits(a) & math.Float64bits(b))
+	}
+	if a > b {
+		return a
+	}
+	return b
+}
+
+func copysignF32(a, b float32) float32 {
+	return math.Float32frombits(
+		math.Float32bits(a)&^signMaskF32 | math.Float32bits(b)&signMaskF32,
+	)
+}
+
+func copysignF64(a, b float64) float64 {
+	return math.Float64frombits(
+		math.Float64bits(a)&^signMaskF64 | math.Float64bits(b)&signMaskF64,
+	)
 }
 
 func truncF32SToI32(a float32) (int32, error) {

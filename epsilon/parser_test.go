@@ -16,6 +16,9 @@ package epsilon
 
 import (
 	"bytes"
+	"errors"
+	"io"
+	"math"
 	"reflect"
 	"slices"
 	"testing"
@@ -320,6 +323,301 @@ func TestParseImportTable(t *testing.T) {
 	}
 }
 
+func TestParseTableTypeRejectsInvalidReferenceType(t *testing.T) {
+	_, err := newParser(
+		bytes.NewReader([]byte{0x00}),
+		DefaultConfig(),
+	).parseTableType()
+	if err != errInvalidReferenceType {
+		t.Fatalf("expected %v, got %v", errInvalidReferenceType, err)
+	}
+}
+
+func TestParseRejectsInvalidUtf8Names(t *testing.T) {
+	// 0xff never appears in well-formed UTF-8.
+	tests := []struct {
+		name    string
+		encoded []byte
+		parse   func(*parser) error
+	}{
+		{
+			name:    "import module name",
+			encoded: []byte{0x01, 0xff, 0x01, 0x66, 0x00, 0x00},
+			parse: func(p *parser) error {
+				_, err := p.parseImport()
+				return err
+			},
+		},
+		{
+			name:    "import name",
+			encoded: []byte{0x01, 0x66, 0x01, 0xff, 0x00, 0x00},
+			parse: func(p *parser) error {
+				_, err := p.parseImport()
+				return err
+			},
+		},
+		{
+			name:    "export name",
+			encoded: []byte{0x01, 0xff, 0x00, 0x00},
+			parse: func(p *parser) error {
+				_, err := p.parseExport()
+				return err
+			},
+		},
+		{
+			name:    "custom section name",
+			encoded: []byte{0x01, 0xff},
+			parse:   (*parser).parseCustomSection,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			parser := newParser(bytes.NewReader(test.encoded), DefaultConfig())
+			if err := test.parse(parser); !errors.Is(err, errInvalidUTF8) {
+				t.Fatalf("expected %v, got %v", errInvalidUTF8, err)
+			}
+		})
+	}
+}
+
+func TestParseElementRejectsInvalidReferenceType(t *testing.T) {
+	tests := []struct {
+		name    string
+		encoded []byte
+	}{
+		{
+			name:    "passive",
+			encoded: []byte{0x05, 0x00},
+		},
+		{
+			name: "active",
+			encoded: []byte{
+				0x06, 0x00, byte(i32Const), 0x00, byte(end), 0x00,
+			},
+		},
+		{
+			name:    "declarative",
+			encoded: []byte{0x07, 0x00},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := newParser(
+				bytes.NewReader(test.encoded),
+				DefaultConfig(),
+			).parseElementSegment()
+			if err != errInvalidReferenceType {
+				t.Fatalf("expected %v, got %v", errInvalidReferenceType, err)
+			}
+		})
+	}
+}
+
+func TestParseElementRejectsOversizedIndexes(t *testing.T) {
+	tooLarge := []byte{0x80, 0x80, 0x80, 0x80, 0x10}
+	tests := []struct {
+		name    string
+		encoded []byte
+	}{
+		{
+			name: "function index",
+			encoded: append(
+				[]byte{0x00, byte(i32Const), 0x00, byte(end), 0x01},
+				tooLarge...,
+			),
+		},
+		{
+			name:    "table index with function indexes",
+			encoded: append([]byte{0x02}, tooLarge...),
+		},
+		{
+			name:    "table index with expressions",
+			encoded: append([]byte{0x06}, tooLarge...),
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := newParser(
+				bytes.NewReader(test.encoded),
+				DefaultConfig(),
+			).parseElementSegment()
+			if err != errIntegerTooLarge {
+				t.Fatalf("expected %v, got %v", errIntegerTooLarge, err)
+			}
+		})
+	}
+}
+
+func TestReadUleb128(t *testing.T) {
+	tests := []struct {
+		name     string
+		bitWidth uint
+		encoded  []byte
+		want     uint64
+		wantErr  error
+	}{
+		{
+			name:     "u32 maximum",
+			bitWidth: 32,
+			encoded:  []byte{0xff, 0xff, 0xff, 0xff, 0x0f},
+			want:     math.MaxUint32,
+		},
+		{
+			name:     "u32 padded zero",
+			bitWidth: 32,
+			encoded:  []byte{0x80, 0x80, 0x80, 0x80, 0x00},
+		},
+		{
+			name:     "u32 unused bits",
+			bitWidth: 32,
+			encoded:  []byte{0x80, 0x80, 0x80, 0x80, 0x10},
+			wantErr:  errIntegerTooLarge,
+		},
+		{
+			name:     "u32 continuation after last byte",
+			bitWidth: 32,
+			encoded:  []byte{0x80, 0x80, 0x80, 0x80, 0x80},
+			wantErr:  errIntRepresentationTooLong,
+		},
+		{
+			name:     "u64 maximum",
+			bitWidth: 64,
+			encoded: []byte{
+				0xff, 0xff, 0xff, 0xff, 0xff,
+				0xff, 0xff, 0xff, 0xff, 0x01,
+			},
+			want: math.MaxUint64,
+		},
+		{
+			name:     "u64 padded two",
+			bitWidth: 64,
+			encoded: []byte{
+				0x82, 0x80, 0x80, 0x80, 0x80,
+				0x80, 0x80, 0x80, 0x80, 0x00,
+			},
+			want: 2,
+		},
+		{
+			name:     "u64 unused low bits",
+			bitWidth: 64,
+			encoded: []byte{
+				0x82, 0x80, 0x80, 0x80, 0x80,
+				0x80, 0x80, 0x80, 0x80, 0x10,
+			},
+			wantErr: errIntegerTooLarge,
+		},
+		{
+			name:     "u64 unused high bits",
+			bitWidth: 64,
+			encoded: []byte{
+				0x82, 0x80, 0x80, 0x80, 0x80,
+				0x80, 0x80, 0x80, 0x80, 0x40,
+			},
+			wantErr: errIntegerTooLarge,
+		},
+		{
+			name:     "u64 continuation after last byte",
+			bitWidth: 64,
+			encoded: []byte{
+				0x80, 0x80, 0x80, 0x80, 0x80,
+				0x80, 0x80, 0x80, 0x80, 0x80,
+			},
+			wantErr: errIntRepresentationTooLong,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			parser := newParser(bytes.NewReader(test.encoded), DefaultConfig())
+			got, err := parser.readUleb128(test.bitWidth)
+			if err != test.wantErr {
+				t.Fatalf("expected error %v, got %v", test.wantErr, err)
+			}
+			if got != test.want {
+				t.Fatalf("expected value %d, got %d", test.want, got)
+			}
+		})
+	}
+}
+
+func TestReadCodeDecodesLaneIndexesAsBytes(t *testing.T) {
+	shuffleEncoded := []byte{0xfd, 0x0d}
+	shuffleEncoded = append(
+		shuffleEncoded,
+		bytes.Repeat([]byte{0x80}, 16)...,
+	)
+	shuffleEncoded = append(shuffleEncoded, byte(end))
+	shuffleBytecode := []uint64{uint64(i8x16Shuffle)}
+	for range 16 {
+		shuffleBytecode = append(shuffleBytecode, 0x80)
+	}
+	shuffleBytecode = append(shuffleBytecode, uint64(end))
+
+	tests := []struct {
+		name     string
+		encoded  []byte
+		bytecode []uint64
+	}{
+		{
+			name: "extract lane",
+			encoded: []byte{
+				0xfd, 0x15, 0x80, byte(unreachable), byte(end),
+			},
+			bytecode: []uint64{
+				uint64(i8x16ExtractLaneS),
+				0x80,
+				uint64(unreachable),
+				uint64(end),
+			},
+		},
+		{
+			name: "load lane",
+			encoded: []byte{
+				0xfd, 0x54,
+				0x00,
+				0x00,
+				0x80,
+				byte(unreachable),
+				byte(end),
+			},
+			bytecode: []uint64{
+				uint64(v128Load8Lane),
+				0,
+				0,
+				0,
+				0x80,
+				uint64(unreachable),
+				uint64(end),
+			},
+		},
+		{
+			name:     "shuffle",
+			encoded:  shuffleEncoded,
+			bytecode: shuffleBytecode,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			parser := newParser(bytes.NewReader(test.encoded), DefaultConfig())
+			result, err := parser.readCode(uint32(len(test.encoded)), nil)
+			if err != nil {
+				t.Fatalf("readCode failed: %v", err)
+			}
+			if !slices.Equal(result.bytecode, test.bytecode) {
+				t.Fatalf(
+					"expected bytecode %v, got %v",
+					test.bytecode,
+					result.bytecode,
+				)
+			}
+		})
+	}
+}
+
 func TestParseImportMemory(t *testing.T) {
 	wat := `(module (import "module" "memory" (memory 1)))`
 
@@ -469,12 +767,86 @@ func TestParsePassiveDataSegment(t *testing.T) {
 	}
 }
 
+func TestParseDataCountAsUint32(t *testing.T) {
+	tests := []struct {
+		name    string
+		encoded []byte
+		wantErr error
+	}{
+		{
+			name:    "five-byte padded zero",
+			encoded: []byte{0x80, 0x80, 0x80, 0x80, 0x00},
+		},
+		{
+			name:    "six-byte zero",
+			encoded: []byte{0x80, 0x80, 0x80, 0x80, 0x80, 0x00},
+			wantErr: errIntRepresentationTooLong,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			wasm := []byte{
+				0x00, 0x61, 0x73, 0x6d,
+				0x01, 0x00, 0x00, 0x00,
+				byte(dataCountSectionId),
+				byte(len(test.encoded)),
+			}
+			wasm = append(wasm, test.encoded...)
+
+			_, err := newParser(
+				bytes.NewReader(wasm),
+				DefaultConfig(),
+			).parse()
+			if err != test.wantErr {
+				t.Fatalf("expected error %v, got %v", test.wantErr, err)
+			}
+		})
+	}
+}
+
+func TestParseLocalCountAsUint32(t *testing.T) {
+	tests := []struct {
+		name    string
+		encoded []byte
+		wantErr error
+	}{
+		{
+			name: "five-byte padded zero",
+			encoded: []byte{
+				0x80, 0x80, 0x80, 0x80, 0x00,
+				0x7f,
+			},
+		},
+		{
+			name: "six-byte zero",
+			encoded: []byte{
+				0x80, 0x80, 0x80, 0x80, 0x80, 0x00,
+				0x7f,
+			},
+			wantErr: errIntRepresentationTooLong,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := newParser(
+				bytes.NewReader(test.encoded),
+				DefaultConfig(),
+			).parseLocalVariables()
+			if err != test.wantErr {
+				t.Fatalf("expected error %v, got %v", test.wantErr, err)
+			}
+		})
+	}
+}
+
 func TestParseTruncatedFunctionBody(t *testing.T) {
 	// Truncated function body where the last byte is 0x0B (end), but it's
 	// actually an immediate for i32.const.
 	wasm := []byte{
 		0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, // header
-		0x01, 0x05, 0x01, 0x60, 0x00, 0x00, // type section
+		0x01, 0x04, 0x01, 0x60, 0x00, 0x00, // type section
 		0x03, 0x02, 0x01, 0x00, // function section
 		0x0a, 0x05, 0x01, 0x03, 0x00, 0x41, 0x0b, // i32.const 0x0B (truncated)
 	}
@@ -486,5 +858,113 @@ func TestParseTruncatedFunctionBody(t *testing.T) {
 	}
 	if err != errMissingEndOpcode {
 		t.Errorf("expected errMissingEndOpcode, got %v", err)
+	}
+}
+
+func TestParseSectionPayloadBounds(t *testing.T) {
+	header := []byte{
+		0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00,
+	}
+	tests := []struct {
+		name    string
+		section []byte
+		wantErr error
+	}{
+		{
+			name:    "content outside payload",
+			section: []byte{byte(typeSectionId), 0x00, 0x00},
+			wantErr: io.EOF,
+		},
+		{
+			name:    "payload shorter than declared",
+			section: []byte{byte(typeSectionId), 0x02, 0x00},
+			wantErr: errSectionSizeMismatch,
+		},
+		{
+			name:    "trailing payload content",
+			section: []byte{byte(typeSectionId), 0x02, 0x00, 0x00},
+			wantErr: errSectionSizeMismatch,
+		},
+		{
+			name: "function body outside payload",
+			section: []byte{
+				byte(codeSectionId), 0x03, 0x01, 0x02, 0x00,
+			},
+			wantErr: io.ErrUnexpectedEOF,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			wasm := append(slices.Clone(header), test.section...)
+			_, err := newParser(
+				bytes.NewReader(wasm),
+				DefaultConfig(),
+			).parse()
+			if err != test.wantErr {
+				t.Fatalf("expected %v, got %v", test.wantErr, err)
+			}
+		})
+	}
+}
+
+func TestParseCustomSectionDoesNotReadPastPayload(t *testing.T) {
+	wasm := []byte{
+		0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00,
+		byte(customSectionId), 0x01, 0x01,
+		byte(typeSectionId), 0x01, 0x00,
+	}
+	reader := bytes.NewReader(wasm)
+	_, err := newParser(reader, DefaultConfig()).parse()
+	if err != io.EOF {
+		t.Fatalf("expected EOF, got %v", err)
+	}
+	if reader.Len() != 3 {
+		t.Fatalf(
+			"expected next section to remain unread, got %d bytes",
+			reader.Len(),
+		)
+	}
+}
+
+func TestReadOpcodeRejectsNamespaceAliasing(t *testing.T) {
+	tests := []struct {
+		name    string
+		encoded []byte
+		want    opcode
+		wantErr error
+	}{
+		{
+			name:    "FC cannot alias FD",
+			encoded: []byte{0xFC, 0x80, 0x02},
+			wantErr: errPrefixedOpcodeOutOfRange,
+		},
+		{
+			name: "FD cannot wrap to a single-byte opcode",
+			encoded: []byte{
+				0xFD, 0x80, 0x86, 0xFC, 0xFF, 0x0F,
+			},
+			wantErr: errPrefixedOpcodeOutOfRange,
+		},
+		{
+			name:    "largest representable subopcode",
+			encoded: []byte{0xFD, 0xFF, 0x01},
+			want:    f64x2ConvertLowI32x4U,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got, err := newParser(
+				bytes.NewReader(test.encoded),
+				DefaultConfig(),
+			).readOpcode()
+			if err != test.wantErr {
+				t.Fatalf("expected error %v, got %v", test.wantErr, err)
+			}
+			if got != test.want {
+				t.Fatalf("expected opcode %#x, got %#x", test.want, got)
+			}
+		})
 	}
 }

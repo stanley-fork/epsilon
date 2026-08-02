@@ -20,6 +20,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"io"
+	"math"
 	"os"
 
 	"github.com/ziggy42/epsilon/epsilon"
@@ -160,12 +161,20 @@ func (w *wasiResourceTable) allocate(
 		return mapError(err)
 	}
 
-	targetSize := offset + length
-	if targetSize <= info.Size() {
+	unsignedOffset := uint64(offset)
+	unsignedLength := uint64(length)
+	if unsignedLength > math.MaxUint64-unsignedOffset {
+		return errnoFbig
+	}
+	targetSize := unsignedOffset + unsignedLength
+	if targetSize > math.MaxInt64 {
+		return errnoFbig
+	}
+	if targetSize <= uint64(info.Size()) {
 		return errnoSuccess
 	}
 
-	if err := fd.file.Truncate(targetSize); err != nil {
+	if err := fd.file.Truncate(int64(targetSize)); err != nil {
 		return mapError(err)
 	}
 	return errnoSuccess
@@ -284,7 +293,7 @@ func (w *wasiResourceTable) setFileStatSize(fdIndex int32, size int64) int32 {
 
 func (w *wasiResourceTable) setFileStatTimes(
 	fdIndex int32,
-	atim, mtim int64,
+	atim, mtim uint64,
 	fstFlags int32,
 ) int32 {
 	fd, errCode := w.getFileOrDir(fdIndex, RightsFdFilestatSetTimes)
@@ -606,7 +615,7 @@ func (w *wasiResourceTable) pathFilestatGet(
 func (w *wasiResourceTable) pathFilestatSetTimes(
 	memory *epsilon.Memory,
 	fdIndex, flags, pathPtr, pathLen int32,
-	atim, mtim int64,
+	atim, mtim uint64,
 	fstFlags int32,
 ) int32 {
 	fd, errCode := w.getDir(fdIndex, RightsPathFilestatSetTimes)
@@ -1017,7 +1026,7 @@ func (w *wasiResourceTable) getFileOrDir(
 	if !ok {
 		return nil, errnoBadF
 	}
-	if fd.rights&rights == 0 {
+	if fd.rights&rights != rights {
 		return nil, errnoNotCapable
 	}
 	return fd, errnoSuccess
@@ -1034,7 +1043,7 @@ func (w *wasiResourceTable) getSocket(
 	if fd.fileType != fileTypeSocketDgram && fd.fileType != fileTypeSocketStream {
 		return nil, errnoNotSock
 	}
-	if fd.rights&rights == 0 {
+	if fd.rights&rights != rights {
 		return nil, errnoNotCapable
 	}
 	return fd, errnoSuccess
@@ -1047,12 +1056,16 @@ func iterIovec(
 	iovecPtr, iovecLength, totalReadPtr int32,
 	readBytes func([]byte, int64) (int, error),
 ) int32 {
+	iovecCount := uint32(iovecLength)
+	iovecs, ok := getIovecArray(memory, iovecPtr, iovecCount)
+	if !ok {
+		return errnoFault
+	}
+
 	var totalRead uint32
-	for i := range iovecLength {
-		iovec, err := memory.Get(0, uint32(iovecPtr)+uint32(i*8), 8)
-		if err != nil {
-			return errnoFault
-		}
+	for i := range iovecCount {
+		offset := i * 8
+		iovec := iovecs[offset : offset+8]
 
 		ptr := binary.LittleEndian.Uint32(iovec[0:4])
 		length := binary.LittleEndian.Uint32(iovec[4:8])
@@ -1085,12 +1098,16 @@ func iterCiovec(
 	ciovecPtr, ciovecLength, totalWrittenPtr int32,
 	writeBytes func([]byte) (int, error),
 ) int32 {
+	ciovecCount := uint32(ciovecLength)
+	ciovecs, ok := getIovecArray(memory, ciovecPtr, ciovecCount)
+	if !ok {
+		return errnoFault
+	}
+
 	var totalWritten uint32
-	for i := range ciovecLength {
-		ciovec, err := memory.Get(0, uint32(ciovecPtr)+uint32(i*8), 8)
-		if err != nil {
-			return errnoFault
-		}
+	for i := range ciovecCount {
+		offset := i * 8
+		ciovec := ciovecs[offset : offset+8]
 
 		ptr := binary.LittleEndian.Uint32(ciovec[0:4])
 		length := binary.LittleEndian.Uint32(ciovec[4:8])
@@ -1120,6 +1137,23 @@ func iterCiovec(
 		return errnoFault
 	}
 	return errnoSuccess
+}
+
+func getIovecArray(
+	memory *epsilon.Memory,
+	iovecPtr int32,
+	iovecCount uint32,
+) ([]byte, bool) {
+	if iovecCount == 0 {
+		return nil, true
+	}
+
+	byteLength := uint64(iovecCount) * 8
+	if byteLength > math.MaxUint32 {
+		return nil, false
+	}
+	iovecs, err := memory.Get(uint32(iovecPtr), 0, uint32(byteLength))
+	return iovecs, err == nil
 }
 
 func getModeFileType(mode os.FileMode) uint8 {

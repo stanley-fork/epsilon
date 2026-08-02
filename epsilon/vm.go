@@ -221,7 +221,7 @@ func (vm *vm) instantiate(
 
 	if module.startIndex != nil {
 		function := vm.store.funcs[instance.funcAddrs[*module.startIndex]]
-		if err := vm.invokeFunction(function); err != nil {
+		if _, err := vm.invoke(function, nil); err != nil {
 			return nil, err
 		}
 	}
@@ -231,8 +231,10 @@ func (vm *vm) instantiate(
 }
 
 func (vm *vm) invoke(function FunctionInstance, args []any) ([]any, error) {
+	stackHeight := len(vm.stack.data)
 	vm.stack.pushAll(args)
 	if err := vm.invokeFunction(function); err != nil {
+		vm.stack.data = vm.stack.data[:stackHeight]
 		return nil, err
 	}
 	return vm.stack.popValueTypes(function.GetType().ResultTypes), nil
@@ -695,7 +697,7 @@ func (vm *vm) runLoop(frame *callFrame) error {
 			res := int64(bits.RotateLeft64(uint64(a), -int(b)))
 			vm.stack.data[len(vm.stack.data)-1] = i64(res)
 		case f32Abs:
-			vm.stack.pushFloat32(abs(vm.stack.popFloat32()))
+			vm.stack.pushFloat32(absF32(vm.stack.popFloat32()))
 		case f32Neg:
 			vm.stack.pushFloat32(-vm.stack.popFloat32())
 		case f32Ceil:
@@ -723,7 +725,7 @@ func (vm *vm) runLoop(frame *callFrame) error {
 		case f32Copysign:
 			vm.handleF32Copysign()
 		case f64Abs:
-			vm.stack.pushFloat64(abs(vm.stack.popFloat64()))
+			vm.stack.pushFloat64(absF64(vm.stack.popFloat64()))
 		case f64Neg:
 			vm.stack.pushFloat64(-vm.stack.popFloat64())
 		case f64Ceil:
@@ -1768,7 +1770,7 @@ func (vm *vm) newElementInstance(
 
 func toStoreFuncIndexes(
 	moduleInstance *ModuleInstance,
-	localIndexes []int32,
+	localIndexes []uint32,
 ) []int32 {
 	storeIndices := make([]int32, len(localIndexes))
 	for i, localIndex := range localIndexes {

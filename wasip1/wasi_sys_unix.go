@@ -25,6 +25,7 @@ import (
 	"runtime"
 	"strings"
 	"syscall"
+	"time"
 
 	"golang.org/x/sys/unix"
 )
@@ -211,7 +212,7 @@ func setFdFlags(file *os.File, fdFlags int32) error {
 func utimes(
 	dir *os.File,
 	path string,
-	atim, mtim int64,
+	atim, mtim uint64,
 	fstFlags int32,
 	followSymlinks bool,
 ) error {
@@ -231,7 +232,7 @@ func utimes(
 	return unix.UtimesNanoAt(dirFd, fileName, times, unix.AT_SYMLINK_NOFOLLOW)
 }
 
-func utimesNanoAt(file *os.File, atim, mtim int64, fstFlags int32) error {
+func utimesNanoAt(file *os.File, atim, mtim uint64, fstFlags int32) error {
 	times, err := buildTimespec(atim, mtim, fstFlags)
 	if err != nil {
 		return err
@@ -848,7 +849,14 @@ func fileTypeFromMode(mode uint32) int8 {
 	}
 }
 
-func buildTimespec(atim, mtim int64, fstFlags int32) ([]unix.Timespec, error) {
+func timestampToTimespec(timestamp uint64) (unix.Timespec, error) {
+	const nanosecondsPerSecond = 1_000_000_000
+	seconds := int64(timestamp / nanosecondsPerSecond)
+	nanoseconds := int64(timestamp % nanosecondsPerSecond)
+	return unix.TimeToTimespec(time.Unix(seconds, nanoseconds))
+}
+
+func buildTimespec(atim, mtim uint64, fstFlags int32) ([]unix.Timespec, error) {
 	// ATIM and ATIM_NOW are mutually exclusive, as are MTIM and MTIM_NOW
 	if (fstFlags&fstFlagsAtim != 0 && fstFlags&fstFlagsAtimNow != 0) ||
 		(fstFlags&fstFlagsMtim != 0 && fstFlags&fstFlagsMtimNow != 0) {
@@ -856,11 +864,15 @@ func buildTimespec(atim, mtim int64, fstFlags int32) ([]unix.Timespec, error) {
 	}
 
 	var atimSpec unix.Timespec
+	var err error
 	switch {
 	case fstFlags&fstFlagsAtimNow != 0:
 		atimSpec = unix.Timespec{Nsec: utimeNow}
 	case fstFlags&fstFlagsAtim != 0:
-		atimSpec = unix.NsecToTimespec(atim)
+		atimSpec, err = timestampToTimespec(atim)
+		if err != nil {
+			return nil, err
+		}
 	default:
 		atimSpec = unix.Timespec{Nsec: utimeOmit}
 	}
@@ -870,7 +882,10 @@ func buildTimespec(atim, mtim int64, fstFlags int32) ([]unix.Timespec, error) {
 	case fstFlags&fstFlagsMtimNow != 0:
 		mtimSpec = unix.Timespec{Nsec: utimeNow}
 	case fstFlags&fstFlagsMtim != 0:
-		mtimSpec = unix.NsecToTimespec(mtim)
+		mtimSpec, err = timestampToTimespec(mtim)
+		if err != nil {
+			return nil, err
+		}
 	default:
 		mtimSpec = unix.Timespec{Nsec: utimeOmit}
 	}
@@ -894,8 +909,16 @@ func mapError(err error) int32 {
 			return errnoNoEnt
 		case syscall.EEXIST:
 			return errnoExist
+		case syscall.EFAULT:
+			return errnoFault
+		case syscall.EFBIG:
+			return errnoFbig
+		case syscall.EINTR:
+			return errnoIntr
 		case syscall.EISDIR:
 			return errnoIsDir
+		case syscall.EIO:
+			return errnoIO
 		case syscall.ENOTDIR:
 			return errnoNotDir
 		case syscall.EINVAL:
@@ -906,14 +929,32 @@ func mapError(err error) int32 {
 			return errnoLoop
 		case syscall.EBADF:
 			return errnoBadF
-		case syscall.EMFILE, syscall.ENFILE:
+		case syscall.EMFILE:
+			return errnoMFile
+		case syscall.ENFILE:
 			return errnoNFile
 		case syscall.ENAMETOOLONG:
 			return errnoNameTooLong
+		case syscall.ENOSPC:
+			return errnoNoSpc
+		case syscall.ENOTSOCK:
+			return errnoNotSock
+		case syscall.ENOTSUP:
+			return errnoNotSup
+		case syscall.EOVERFLOW:
+			return errnoOverflow
 		case syscall.EPIPE:
 			return errnoPipe
 		case syscall.EAGAIN:
 			return errnoAgain
+		case syscall.ERANGE:
+			return errnoRange
+		case syscall.EROFS:
+			return errnoRofs
+		case syscall.ESPIPE:
+			return errnoSpipe
+		case syscall.EXDEV:
+			return errnoXdev
 		}
 	}
 

@@ -18,7 +18,9 @@ package wasip1
 
 import (
 	"encoding/binary"
+	"math"
 	"net"
+	"os"
 	"testing"
 	"time"
 	"unsafe"
@@ -79,6 +81,118 @@ func TestRightsEscalation_FdFilestatGet(t *testing.T) {
 	errno := rt.getFileStat(mem, 3, 0)
 	if errno != errnoNotCapable {
 		t.Errorf("expected errnoNotCapable (76), got %d", errno)
+	}
+}
+
+func TestCompositeRightsRequireAll(t *testing.T) {
+	t.Run("file", func(t *testing.T) {
+		rt := &wasiResourceTable{
+			fds: map[int32]*wasiFileDescriptor{
+				3: {
+					fileType: fileTypeRegularFile,
+					rights:   RightsFdRead,
+				},
+			},
+		}
+		required := RightsFdRead | RightsFdSeek
+		if _, errno := rt.getFileOrDir(3, required); errno != errnoNotCapable {
+			t.Fatalf("expected errnoNotCapable, got %d", errno)
+		}
+
+		rt.fds[3].rights = required
+		if _, errno := rt.getFileOrDir(3, required); errno != errnoSuccess {
+			t.Fatalf("expected success, got %d", errno)
+		}
+	})
+
+	t.Run("socket", func(t *testing.T) {
+		rt := &wasiResourceTable{
+			fds: map[int32]*wasiFileDescriptor{
+				3: {
+					fileType: fileTypeSocketStream,
+					rights:   RightsPollFdReadwrite,
+				},
+			},
+		}
+		required := RightsPollFdReadwrite | RightsFdRead
+		if _, errno := rt.getSocket(3, required); errno != errnoNotCapable {
+			t.Fatalf("expected errnoNotCapable, got %d", errno)
+		}
+
+		rt.fds[3].rights = required
+		if _, errno := rt.getSocket(3, required); errno != errnoSuccess {
+			t.Fatalf("expected success, got %d", errno)
+		}
+	})
+}
+
+func TestIovecHighBitCountReturnsFault(t *testing.T) {
+	memory := epsilon.NewRuntime().NewMemory(
+		epsilon.MemoryType{Limits: epsilon.Limits{Min: 1}},
+	)
+
+	t.Run("read", func(t *testing.T) {
+		called := false
+		errno := iterIovec(memory, 0, -1, 0, func([]byte, int64) (int, error) {
+			called = true
+			return 0, nil
+		})
+		if errno != errnoFault {
+			t.Fatalf("expected errnoFault, got %d", errno)
+		}
+		if called {
+			t.Fatal("read callback was called")
+		}
+	})
+
+	t.Run("write", func(t *testing.T) {
+		called := false
+		errno := iterCiovec(memory, 0, -1, 0, func([]byte) (int, error) {
+			called = true
+			return 0, nil
+		})
+		if errno != errnoFault {
+			t.Fatalf("expected errnoFault, got %d", errno)
+		}
+		if called {
+			t.Fatal("write callback was called")
+		}
+	})
+}
+
+func TestAllocateRejectsUnrepresentableRanges(t *testing.T) {
+	file, err := os.CreateTemp(t.TempDir(), "allocate")
+	if err != nil {
+		t.Fatalf("create temp file: %v", err)
+	}
+	defer file.Close()
+
+	resources := &wasiResourceTable{
+		fds: map[int32]*wasiFileDescriptor{
+			3: {
+				file:     file,
+				fileType: fileTypeRegularFile,
+				rights:   RightsFdAllocate,
+			},
+		},
+	}
+	tests := []struct {
+		name   string
+		offset int64
+		length int64
+	}{
+		{name: "high bit", offset: math.MinInt64, length: 1},
+		{name: "host range overflow", offset: math.MaxInt64, length: 1},
+		{name: "unsigned addition overflow", offset: -1, length: 1},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			errno := resources.allocate(3, test.offset, test.length)
+			if errno != errnoFbig {
+				t.Fatalf("expected errnoFbig, got %d", errno)
+			}
+		})
 	}
 }
 

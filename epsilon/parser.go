@@ -36,9 +36,12 @@ var (
 	errInvalidImportDescriptor   = errors.New("invalid import descriptor")
 	errInvalidLimitsFormat       = errors.New("invalid limits format")
 	errInvalidMagicNumber        = errors.New("invalid magic number")
+	errInvalidReferenceType      = errors.New("invalid reference type")
 	errInvalidUTF8               = errors.New("invalid UTF-8")
 	errMalformedMemopFlags       = errors.New("malformed memop flags")
 	errMissingEndOpcode          = errors.New("missing end opcode")
+	errPrefixedOpcodeOutOfRange  = errors.New("prefixed opcode out of range")
+	errSectionSizeMismatch       = errors.New("section size mismatch")
 	errUnexpectedContent         = errors.New("unexpected content after last section")
 )
 
@@ -80,7 +83,7 @@ const (
 )
 
 type localEntry struct {
-	count uint64
+	count uint32
 	typ   ValueType
 }
 
@@ -90,41 +93,11 @@ type wasmReader interface {
 	io.ByteReader
 }
 
-// limitedByteReader caps reads at rem bytes from an underlying wasmReader. It
-// is equivalent to wrapping an io.LimitReader in a bufio.Reader to regain
-// ByteReader, but reads from the source directly and so allocates no buffer.
-type limitedByteReader struct {
-	r   wasmReader
-	rem int64
-}
-
-func (l *limitedByteReader) Read(p []byte) (int, error) {
-	if l.rem <= 0 {
-		return 0, io.EOF
-	}
-	if int64(len(p)) > l.rem {
-		p = p[:l.rem]
-	}
-	n, err := l.r.Read(p)
-	l.rem -= int64(n)
-	return n, err
-}
-
-func (l *limitedByteReader) ReadByte() (byte, error) {
-	if l.rem <= 0 {
-		return 0, io.EOF
-	}
-	b, err := l.r.ReadByte()
-	if err == nil {
-		l.rem--
-	}
-	return b, err
-}
-
 // parser is a parser for WASM modules.
 type parser struct {
-	reader wasmReader
-	config Config
+	reader         wasmReader
+	bytesRemaining int64
+	config         Config
 }
 
 func newParser(reader io.Reader, config Config) *parser {
@@ -134,7 +107,36 @@ func newParser(reader io.Reader, config Config) *parser {
 	} else {
 		wr = bufio.NewReader(reader)
 	}
-	return &parser{reader: wr, config: config}
+	return &parser{
+		reader:         wr,
+		bytesRemaining: -1,
+		config:         config,
+	}
+}
+
+func (p *parser) Read(bytes []byte) (int, error) {
+	if p.bytesRemaining == 0 {
+		return 0, io.EOF
+	}
+	if p.bytesRemaining > 0 && int64(len(bytes)) > p.bytesRemaining {
+		bytes = bytes[:p.bytesRemaining]
+	}
+	n, err := p.reader.Read(bytes)
+	if p.bytesRemaining > 0 {
+		p.bytesRemaining -= int64(n)
+	}
+	return n, err
+}
+
+func (p *parser) ReadByte() (byte, error) {
+	if p.bytesRemaining == 0 {
+		return 0, io.EOF
+	}
+	b, err := p.reader.ReadByte()
+	if err == nil && p.bytesRemaining > 0 {
+		p.bytesRemaining--
+	}
+	return b, err
 }
 
 // parse takes a byte slice and returns a Module.
@@ -154,14 +156,14 @@ func (p *parser) parse() (*moduleDefinition, error) {
 	var elementSegments []elementSegment
 	var globals []globalVariable
 	var dataSegments []dataSegment
-	var dataCount *uint64
+	var dataCount *uint32
 
 	// We initialize lastSection to CustomSectionId since custom sections
 	// can be in any order.
 	lastSection := customSectionId
 
 	for {
-		sectionIdByte, err := p.reader.ReadByte()
+		sectionIdByte, err := p.ReadByte()
 		if err == io.EOF {
 			break
 		}
@@ -182,9 +184,12 @@ func (p *parser) parse() (*moduleDefinition, error) {
 		if err != nil {
 			return nil, fmt.Errorf("failed to read payload length: %w", err)
 		}
+
+		p.bytesRemaining = int64(payloadLen)
+
 		switch sectionId {
 		case customSectionId:
-			if err := p.parseCustomSection(payloadLen); err != nil {
+			if err := p.parseCustomSection(); err != nil {
 				return nil, err
 			}
 		case typeSectionId:
@@ -244,7 +249,7 @@ func (p *parser) parse() (*moduleDefinition, error) {
 				return nil, err
 			}
 		case dataCountSectionId:
-			count, err := p.parseUint64()
+			count, err := p.parseUint32()
 			if err != nil {
 				return nil, err
 			}
@@ -253,9 +258,14 @@ func (p *parser) parse() (*moduleDefinition, error) {
 		default:
 			return nil, fmt.Errorf("section %d not implemented", sectionId)
 		}
+
+		if p.bytesRemaining != 0 {
+			return nil, errSectionSizeMismatch
+		}
+		p.bytesRemaining = -1
 	}
 
-	if dataCount != nil && *dataCount != uint64(len(dataSegments)) {
+	if dataCount != nil && uint64(*dataCount) != uint64(len(dataSegments)) {
 		return nil, errInconsistentDataCount
 	}
 
@@ -284,7 +294,7 @@ func (p *parser) parse() (*moduleDefinition, error) {
 
 func (p *parser) parseHeader() error {
 	header := make([]byte, 8)
-	if _, err := io.ReadFull(p.reader, header); err != nil {
+	if _, err := io.ReadFull(p, header); err != nil {
 		return err
 	}
 
@@ -298,19 +308,15 @@ func (p *parser) parseHeader() error {
 	return nil
 }
 
-func (p *parser) parseCustomSection(payloadLen uint32) error {
+func (p *parser) parseCustomSection() error {
 	// Custom section is ignored, but we still parse it to return parsing errors
 	// if it's not valid.
-	nameLength, bytesRead, err := p.readUleb128(5)
+	nameLength, err := p.parseUint32()
 	if err != nil {
 		return err
 	}
 
-	if nameLength > math.MaxUint32 {
-		return errIntegerTooLarge
-	}
-
-	nameBytes, err := p.readN(nameLength)
+	nameBytes, err := p.readN(uint64(nameLength))
 	if err != nil {
 		return err
 	}
@@ -318,9 +324,8 @@ func (p *parser) parseCustomSection(payloadLen uint32) error {
 		return errInvalidUTF8
 	}
 
-	// Discard the actual bytes of the section.
-	remainingBytes := payloadLen - uint32(nameLength) - uint32(bytesRead)
-	_, err = io.CopyN(io.Discard, p.reader, int64(remainingBytes))
+	// Discard the remaining bytes of the section.
+	_, err = io.Copy(io.Discard, p)
 	return err
 }
 
@@ -330,11 +335,11 @@ func (p *parser) parseFunction() (function, error) {
 		return function{}, err
 	}
 
-	originalReader := p.reader
-	defer func() { p.reader = originalReader }()
-
-	// Limit reads to this function's body of `size` bytes.
-	p.reader = &limitedByteReader{r: originalReader, rem: int64(size)}
+	sectionBytesRemaining := p.bytesRemaining
+	if int64(size) > sectionBytesRemaining {
+		return function{}, io.ErrUnexpectedEOF
+	}
+	p.bytesRemaining = int64(size)
 
 	localEntries, err := parseVector(p, p.parseLocalVariables)
 	if err != nil {
@@ -343,7 +348,7 @@ func (p *parser) parseFunction() (function, error) {
 
 	var totalLocalsCount uint64
 	for _, entry := range localEntries {
-		totalLocalsCount += entry.count
+		totalLocalsCount += uint64(entry.count)
 	}
 	if totalLocalsCount > uint64(p.config.MaxLocalsPerFunction) {
 		return function{}, fmt.Errorf(
@@ -354,7 +359,7 @@ func (p *parser) parseFunction() (function, error) {
 
 	locals := make([]ValueType, 0, min(totalLocalsCount, maxInitialCapacity))
 	for _, entry := range localEntries {
-		for i := uint64(0); i < entry.count; i++ {
+		for range entry.count {
 			locals = append(locals, entry.typ)
 		}
 	}
@@ -367,9 +372,13 @@ func (p *parser) parseFunction() (function, error) {
 	// Discard any bytes of the function body the parser didn't consume (e.g.
 	// trailing bytes after an early end opcode) so the underlying reader is
 	// positioned at the start of the next function.
-	if _, err := io.Copy(io.Discard, p.reader); err != nil {
+	if _, err := io.Copy(io.Discard, p); err != nil {
 		return function{}, err
 	}
+	if p.bytesRemaining != 0 {
+		return function{}, io.ErrUnexpectedEOF
+	}
+	p.bytesRemaining = sectionBytesRemaining - int64(size)
 
 	body := result.bytecode
 
@@ -400,7 +409,7 @@ func (p *parser) parseFunction() (function, error) {
 }
 
 func (p *parser) parseLocalVariables() (localEntry, error) {
-	count, err := p.parseUint64()
+	count, err := p.parseUint32()
 	if err != nil {
 		return localEntry{}, err
 	}
@@ -424,7 +433,7 @@ func (p *parser) parseImport() (moduleImport, error) {
 	if err != nil {
 		return moduleImport{}, err
 	}
-	b, err := p.reader.ReadByte()
+	b, err := p.ReadByte()
 	if err != nil {
 		return moduleImport{}, err
 	}
@@ -467,7 +476,7 @@ func (p *parser) parseExport() (export, error) {
 	if err != nil {
 		return export{}, err
 	}
-	b, err := p.reader.ReadByte()
+	b, err := p.ReadByte()
 	if err != nil {
 		return export{}, err
 	}
@@ -490,7 +499,7 @@ func (p *parser) parseDataSegment() (dataSegment, error) {
 		if err != nil {
 			return dataSegment{}, err
 		}
-		content, err := parseVector(p, p.reader.ReadByte)
+		content, err := parseVector(p, p.ReadByte)
 		if err != nil {
 			return dataSegment{}, err
 		}
@@ -500,7 +509,7 @@ func (p *parser) parseDataSegment() (dataSegment, error) {
 			offsetExpression: offsetExpression,
 		}, nil
 	case 1:
-		content, err := parseVector(p, p.reader.ReadByte)
+		content, err := parseVector(p, p.ReadByte)
 		if err != nil {
 			return dataSegment{}, err
 		}
@@ -514,7 +523,7 @@ func (p *parser) parseDataSegment() (dataSegment, error) {
 		if err != nil {
 			return dataSegment{}, err
 		}
-		content, err := parseVector(p, p.reader.ReadByte)
+		content, err := parseVector(p, p.ReadByte)
 		if err != nil {
 			return dataSegment{}, err
 		}
@@ -530,7 +539,7 @@ func (p *parser) parseDataSegment() (dataSegment, error) {
 }
 
 func (p *parser) parseFunctionType() (FunctionType, error) {
-	b, err := p.reader.ReadByte()
+	b, err := p.ReadByte()
 	if err != nil {
 		return FunctionType{}, err
 	}
@@ -551,7 +560,7 @@ func (p *parser) parseFunctionType() (FunctionType, error) {
 }
 
 func (p *parser) parseValueType() (ValueType, error) {
-	b, err := p.reader.ReadByte()
+	b, err := p.ReadByte()
 	if err != nil {
 		return nil, err
 	}
@@ -568,7 +577,7 @@ func (p *parser) parseValueType() (ValueType, error) {
 }
 
 func (p *parser) parseTableType() (TableType, error) {
-	b, err := p.reader.ReadByte()
+	referenceType, err := p.parseReferenceType()
 	if err != nil {
 		return TableType{}, err
 	}
@@ -576,7 +585,18 @@ func (p *parser) parseTableType() (TableType, error) {
 	if err != nil {
 		return TableType{}, err
 	}
-	return TableType{ReferenceType: ReferenceType(b), Limits: limits}, nil
+	return TableType{ReferenceType: referenceType, Limits: limits}, nil
+}
+
+func (p *parser) parseReferenceType() (ReferenceType, error) {
+	b, err := p.ReadByte()
+	if err != nil {
+		return 0, err
+	}
+	if b != byte(FuncRefType) && b != byte(ExternRefType) {
+		return 0, errInvalidReferenceType
+	}
+	return ReferenceType(b), nil
 }
 
 func (p *parser) parseMemoryType() (MemoryType, error) {
@@ -604,7 +624,7 @@ func (p *parser) parseGlobalType() (GlobalType, error) {
 	if err != nil {
 		return GlobalType{}, err
 	}
-	isMutable, err := p.reader.ReadByte()
+	isMutable, err := p.ReadByte()
 	if err != nil {
 		return GlobalType{}, err
 	}
@@ -626,36 +646,36 @@ func (p *parser) parseElementSegment() (elementSegment, error) {
 		if err != nil {
 			return elementSegment{}, err
 		}
-		indexes, err := parseVector(p, p.parseUint64)
+		indexes, err := parseVector(p, p.parseUint32)
 		if err != nil {
 			return elementSegment{}, err
 		}
 		return elementSegment{
 			mode:             activeElementMode,
 			kind:             FuncRefType,
-			functionIndexes:  uint64SliceToInt32(indexes),
+			functionIndexes:  indexes,
 			tableIndex:       defaultTableIndex,
 			offsetExpression: offset,
 		}, nil
 	case 1: // Passive element with func indexes.
-		elemkind, err := p.reader.ReadByte()
+		elemkind, err := p.ReadByte()
 		if err != nil {
 			return elementSegment{}, err
 		}
 		if elemkind != 0x00 {
 			return elementSegment{}, errInvalidElementKind
 		}
-		indexes, err := parseVector(p, p.parseUint64)
+		indexes, err := parseVector(p, p.parseUint32)
 		if err != nil {
 			return elementSegment{}, err
 		}
 		return elementSegment{
 			mode:            passiveElementMode,
 			kind:            FuncRefType,
-			functionIndexes: uint64SliceToInt32(indexes),
+			functionIndexes: indexes,
 		}, nil
 	case 2: // Active element with explicit table index and func indexes.
-		tableIdx, err := p.parseUint64()
+		tableIndex, err := p.parseUint32()
 		if err != nil {
 			return elementSegment{}, err
 		}
@@ -663,40 +683,40 @@ func (p *parser) parseElementSegment() (elementSegment, error) {
 		if err != nil {
 			return elementSegment{}, err
 		}
-		elemkind, err := p.reader.ReadByte()
+		elemkind, err := p.ReadByte()
 		if err != nil {
 			return elementSegment{}, err
 		}
 		if elemkind != 0x00 {
 			return elementSegment{}, errInvalidElementKind
 		}
-		indexes, err := parseVector(p, p.parseUint64)
+		indexes, err := parseVector(p, p.parseUint32)
 		if err != nil {
 			return elementSegment{}, err
 		}
 		return elementSegment{
 			mode:             activeElementMode,
 			kind:             FuncRefType,
-			functionIndexes:  uint64SliceToInt32(indexes),
-			tableIndex:       uint32(tableIdx),
+			functionIndexes:  indexes,
+			tableIndex:       tableIndex,
 			offsetExpression: offset,
 		}, nil
 	case 3: // Declarative element with func indexes.
-		elemkind, err := p.reader.ReadByte()
+		elemkind, err := p.ReadByte()
 		if err != nil {
 			return elementSegment{}, err
 		}
 		if elemkind != 0x00 {
 			return elementSegment{}, errInvalidElementKind
 		}
-		indexes, err := parseVector(p, p.parseUint64)
+		indexes, err := parseVector(p, p.parseUint32)
 		if err != nil {
 			return elementSegment{}, err
 		}
 		return elementSegment{
 			mode:            declarativeElementMode,
 			kind:            FuncRefType,
-			functionIndexes: uint64SliceToInt32(indexes),
+			functionIndexes: indexes,
 		}, nil
 	case 4: // Active element with expressions.
 		offset, err := p.parseExpression()
@@ -715,11 +735,10 @@ func (p *parser) parseElementSegment() (elementSegment, error) {
 			offsetExpression:           offset,
 		}, nil
 	case 5: // Passive element with expressions.
-		b, err := p.reader.ReadByte()
+		kind, err := p.parseReferenceType()
 		if err != nil {
 			return elementSegment{}, err
 		}
-		kind := ReferenceType(b)
 		exprs, err := parseVector(p, p.parseExpression)
 		if err != nil {
 			return elementSegment{}, err
@@ -730,7 +749,7 @@ func (p *parser) parseElementSegment() (elementSegment, error) {
 			functionIndexesExpressions: exprs,
 		}, nil
 	case 6: // Active element with explicit table index and expressions.
-		tableIdx, err := p.parseUint64()
+		tableIndex, err := p.parseUint32()
 		if err != nil {
 			return elementSegment{}, err
 		}
@@ -738,11 +757,10 @@ func (p *parser) parseElementSegment() (elementSegment, error) {
 		if err != nil {
 			return elementSegment{}, err
 		}
-		refTypeByte, err := p.reader.ReadByte()
+		kind, err := p.parseReferenceType()
 		if err != nil {
 			return elementSegment{}, err
 		}
-		kind := ReferenceType(refTypeByte)
 		exprs, err := parseVector(p, p.parseExpression)
 		if err != nil {
 			return elementSegment{}, err
@@ -751,15 +769,14 @@ func (p *parser) parseElementSegment() (elementSegment, error) {
 			mode:                       activeElementMode,
 			kind:                       kind,
 			functionIndexesExpressions: exprs,
-			tableIndex:                 uint32(tableIdx),
+			tableIndex:                 tableIndex,
 			offsetExpression:           offset,
 		}, nil
 	case 7: // Declarative element with expressions.
-		refTypeByte, err := p.reader.ReadByte()
+		kind, err := p.parseReferenceType()
 		if err != nil {
 			return elementSegment{}, err
 		}
-		kind := ReferenceType(refTypeByte)
 		exprs, err := parseVector(p, p.parseExpression)
 		if err != nil {
 			return elementSegment{}, err
@@ -785,7 +802,7 @@ func (p *parser) parseExpression() ([]uint64, error) {
 }
 
 func (p *parser) parseLimits() (Limits, error) {
-	b, err := p.reader.ReadByte()
+	b, err := p.ReadByte()
 	if err != nil {
 		return Limits{}, err
 	}
@@ -824,19 +841,11 @@ func parseVector[T any](parser *parser, parse func() (T, error)) ([]T, error) {
 }
 
 func (p *parser) parseUint32() (uint32, error) {
-	val, _, err := p.readUleb128(5)
+	val, err := p.readUleb128(32)
 	if err != nil {
 		return 0, err
 	}
-	if val > math.MaxUint32 {
-		return 0, errIntegerTooLarge
-	}
 	return uint32(val), nil
-}
-
-func (p *parser) parseUint64() (uint64, error) {
-	val, _, err := p.readUleb128(9)
-	return val, err
 }
 
 func (p *parser) parseUtf8String() (string, error) {
@@ -848,6 +857,9 @@ func (p *parser) parseUtf8String() (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("failed to read string bytes: %w", err)
 	}
+	if !utf8.Valid(stringBytes) {
+		return "", errInvalidUTF8
+	}
 	return string(stringBytes), nil
 }
 
@@ -857,18 +869,10 @@ func (p *parser) parseUtf8String() (string, error) {
 // and a short read surfaces as an error.
 func (p *parser) readN(length uint64) ([]byte, error) {
 	buf := bytes.NewBuffer(make([]byte, 0, min(length, maxInitialCapacity)))
-	if _, err := io.CopyN(buf, p.reader, int64(length)); err != nil {
+	if _, err := io.CopyN(buf, p, int64(length)); err != nil {
 		return nil, err
 	}
 	return buf.Bytes(), nil
-}
-
-func uint64SliceToInt32(slice []uint64) []int32 {
-	result := make([]int32, len(slice))
-	for i, val := range slice {
-		result[i] = int32(val)
-	}
-	return result
 }
 
 func validateSectionOrder(last sectionId, current sectionId) error {
@@ -1023,8 +1027,13 @@ func (p *parser) readCode(
 			tableSize,
 			tableFill,
 			refNull,
-			refFunc,
-			i8x16ExtractLaneS,
+			refFunc:
+			immediate, err := p.readUint32()
+			if err != nil {
+				return bytecodeResult{}, err
+			}
+			bytecode = append(bytecode, immediate)
+		case i8x16ExtractLaneS,
 			i8x16ExtractLaneU,
 			i16x8ExtractLaneS,
 			i16x8ExtractLaneU,
@@ -1038,13 +1047,13 @@ func (p *parser) readCode(
 			i64x2ReplaceLane,
 			f32x4ReplaceLane,
 			f64x2ReplaceLane:
-			immediate, err := p.readUint32()
+			immediate, err := p.ReadByte()
 			if err != nil {
 				return bytecodeResult{}, err
 			}
-			bytecode = append(bytecode, immediate)
+			bytecode = append(bytecode, uint64(immediate))
 		case memorySize, memoryGrow:
-			immediate, err := p.reader.ReadByte()
+			immediate, err := p.ReadByte()
 			if err != nil {
 				return bytecodeResult{}, err
 			}
@@ -1166,14 +1175,20 @@ func (p *parser) readCode(
 				return bytecodeResult{}, err
 			}
 
-			laneIndex, err := p.readUint8()
+			laneIndex, err := p.ReadByte()
 			if err != nil {
 				return bytecodeResult{}, err
 			}
-			bytecode = append(bytecode, align, memoryIndex, offset, laneIndex)
+			bytecode = append(
+				bytecode,
+				align,
+				memoryIndex,
+				offset,
+				uint64(laneIndex),
+			)
 		case i8x16Shuffle:
 			for range 16 {
-				val, err := p.readUint8()
+				val, err := p.ReadByte()
 				if err != nil {
 					return bytecodeResult{}, err
 				}
@@ -1200,7 +1215,7 @@ func (p *parser) readCode(
 }
 
 func (p *parser) readOpcode() (opcode, error) {
-	opcodeByte, err := p.reader.ReadByte()
+	opcodeByte, err := p.ReadByte()
 	if err != nil {
 		return 0, err
 	}
@@ -1211,24 +1226,19 @@ func (p *parser) readOpcode() (opcode, error) {
 	}
 
 	// Multi-byte opcode (prefixed with 0xFC or 0xFD).
+	if opcodeByte != 0xFC && opcodeByte != 0xFD {
+		return 0, fmt.Errorf("unrecognized opcode prefix: 0x%X", opcodeByte)
+	}
+
 	val, err := p.readUint32()
 	if err != nil {
 		return 0, err
 	}
-
-	var compositeOpcode uint32
-	switch opcodeByte {
-	case 0xFC:
-		compositeOpcode = 0xFC00 + uint32(val)
-	case 0xFD:
-		compositeOpcode = 0xFD00 + uint32(val)
-	default:
-		// This case should ideally not be reached if opcodeByte is guaranteed to be
-		// < 0xFC or 0xFD. However, as a safeguard, we can return an error.
-		return 0, fmt.Errorf("unrecognized opcode prefix: 0x%X", opcodeByte)
+	if val > math.MaxUint8 {
+		return 0, errPrefixedOpcodeOutOfRange
 	}
 
-	return opcode(compositeOpcode), nil
+	return opcode(uint32(opcodeByte)<<8 | uint32(val)), nil
 }
 
 func (p *parser) readImmediateVector() ([]uint64, error) {
@@ -1286,7 +1296,7 @@ func (p *parser) readMemArg() (uint64, uint64, uint64, error) {
 		}
 	}
 
-	offset, _, err := p.readUleb128(10)
+	offset, err := p.readUleb128(64)
 	if err != nil {
 		return 0, 0, 0, err
 	}
@@ -1311,7 +1321,7 @@ func (p *parser) readBlockType() (uint64, error) {
 
 func (p *parser) readBytes(n uint) ([]byte, error) {
 	bytes := make([]byte, n)
-	if _, err := io.ReadFull(p.reader, bytes); err != nil {
+	if _, err := io.ReadFull(p, bytes); err != nil {
 		return nil, err
 	}
 	return bytes, nil
@@ -1320,14 +1330,7 @@ func (p *parser) readBytes(n uint) ([]byte, error) {
 // readUint32 still returns a uint64, but checks that the value can be
 // interpreted as a WASM u32.
 func (p *parser) readUint32() (uint64, error) {
-	val, _, err := p.readUleb128(5)
-	if err != nil {
-		return 0, err
-	}
-	if val > math.MaxUint32 {
-		return 0, errIntegerTooLarge
-	}
-	return val, nil
+	return p.readUleb128(32)
 }
 
 func (p *parser) readInt32() (uint64, error) {
@@ -1341,43 +1344,28 @@ func (p *parser) readInt32() (uint64, error) {
 	return val, nil
 }
 
-// readUint8 still returns a uint64, but checks that the value can be
-// interpreted as a WASM u8.
-func (p *parser) readUint8() (uint64, error) {
-	val, _, err := p.readUleb128(5)
-	if err != nil {
-		return 0, err
-	}
-	if val > math.MaxUint8 {
-		return 0, errIntegerTooLarge
-	}
-	return val, nil
-}
-
 // readUleb128 decodes an unsigned LEB128-encoded integer.
-func (p *parser) readUleb128(maxBytes int) (uint64, int, error) {
-	bytesRead := 0
-
+func (p *parser) readUleb128(bitWidth uint) (uint64, error) {
 	var value uint64
-	var shift uint
-	for {
-		b, err := p.reader.ReadByte()
+	maxBytes := (bitWidth + 6) / 7
+	for byteIndex := uint(0); byteIndex < maxBytes; byteIndex++ {
+		b, err := p.ReadByte()
 		if err != nil {
-			return 0, bytesRead, err
-		}
-		bytesRead++
-		if bytesRead > maxBytes {
-			return 0, bytesRead, errIntRepresentationTooLong
+			return 0, err
 		}
 
-		group := b & 0b01111111
+		shift := byteIndex * 7
+		group := b & payloadMask
+		remainingBits := bitWidth - shift
+		if remainingBits < 7 && uint(group) >= 1<<remainingBits {
+			return 0, errIntegerTooLarge
+		}
 		value |= uint64(group) << shift
-		shift += 7
-		if b&0b10000000 == 0 {
-			break
+		if b&continuationBit == 0 {
+			return value, nil
 		}
 	}
-	return value, bytesRead, nil
+	return 0, errIntRepresentationTooLong
 }
 
 // readSleb128 decodes a signed 64-bit integer immediate (SLEB128).
@@ -1389,7 +1377,7 @@ func (p *parser) readSleb128(maxBytes int) (uint64, error) {
 	bytesRead := 0
 
 	for {
-		b, err = p.reader.ReadByte()
+		b, err = p.ReadByte()
 		if err != nil {
 			return 0, err
 		}
